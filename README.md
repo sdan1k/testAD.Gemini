@@ -19,7 +19,7 @@ read.me:
 
 ### Проблемы с Google Gemini API
 
-**Текущее состояние:** API ключ `AIzaSyA_EDbi-T8dHzrNwMDhmKI8NNc2IpyVL20` возвращает ошибку **403 Forbidden**.
+**Текущее состояние:** API ключ `AIzaSyA_EDbi-T******` возвращает ошибку **403 Forbidden**.
 
 **Возможные причины:**
 1. API ключ неактивен или истек
