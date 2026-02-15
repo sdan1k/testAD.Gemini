@@ -1,12 +1,6 @@
-node_modules/
+.DS_Store
 .venv/
 venv/
 __pycache__/
-*.pyc
-.DS_Store
-.env
-*.db
-data/
-frontend/.next/
-frontend/node_modules/
-*.log
+*.npy
+
