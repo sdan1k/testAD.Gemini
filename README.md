@@ -1,8 +1,8 @@
-**- Backend: FastAPI with Google Gemini embedding-001
-- Frontend: Next.js 14 with dynamic background effects
-- Added README with instructions for developer
-- Added .env.example template
-- Note: Gemini API key needs to be updated for production use**
+**- Backend: FastAPI with Google Gemini embedding-001**
+**- Frontend: Next.js 14 with dynamic background effects**
+**- Added README with instructions for developer**
+**- Added .env.example template**
+**- Note: Gemini API key needs to be updated for production use**
 
 ________________________________________________________________
 read.me:
