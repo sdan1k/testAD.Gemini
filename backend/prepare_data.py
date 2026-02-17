@@ -1,6 +1,6 @@
 """
 Скрипт подготовки данных: генерация эмбеддингов из CSV файла решений ФАС.
-Использует Google Gemini Embedding API (gemini-embedding-001).
+Использует Google Gemini Embedding API (новый SDK google-genai).
 Запуск: python prepare_data.py
 """
 
@@ -11,9 +11,9 @@ from pathlib import Path
 import time
 import sys
 
-# Используем google.generativeai (старая версия)
-import google.generativeai as genai
-USE_NEW_LIB = False
+# Новый SDK google-genai
+from google import genai
+from google.genai import types
 
 from config import Config
 
@@ -27,14 +27,11 @@ def init_genai_client():
     global client
     api_key = Config.get_api_key()
     
-    if USE_NEW_LIB:
-        client = genai.Client(api_key=api_key)
-    else:
-        genai.configure(api_key=api_key)
+    client = genai.Client(api_key=api_key)
     
     print(f"Gemini API настроен с ключом: {api_key[:10]}...")
     print(f"Модель: gemini-embedding-001")
-    print(f"Размерность эмбеддингов: 768")
+    print(f"Размерность эмбеддингов: {Config.EMBEDDING_DIMENSION}")
 
 
 def get_embedding(text: str, task_type: str = "retrieval_document") -> np.ndarray:
@@ -46,26 +43,27 @@ def get_embedding(text: str, task_type: str = "retrieval_document") -> np.ndarra
         task_type: Тип задачи (retrieval_query или retrieval_document)
     
     Returns:
-        numpy array размерностью 768
+        numpy array размерностью Config.EMBEDDING_DIMENSION
     """
     if not text or not text.strip():
-        return np.zeros(768)
+        return np.zeros(Config.EMBEDDING_DIMENSION)
+    
+    task_type_map = {
+        "retrieval_query": types.EmbedContentTaskType.RETRIEVAL_QUERY,
+        "retrieval_document": types.EmbedContentTaskType.RETRIEVAL_DOCUMENT,
+    }
+    task = task_type_map.get(task_type, types.EmbedContentTaskType.RETRIEVAL_DOCUMENT)
     
     try:
-        if USE_NEW_LIB:
-            result = client.models.embed_content(
-                model="gemini-embedding-001",
-                content=text,
-                config=types.EmbedContentTaskType(task_type)
+        result = client.models.embed_content(
+            model="gemini-embedding-001",
+            contents=text,
+            config=types.EmbedContentConfig(
+                task_type=task,
+                output_dimensionality=Config.EMBEDDING_DIMENSION
             )
-            return np.array(result.embedding.values)
-        else:
-            result = genai.embed_content(
-                model="gemini-embedding-001",
-                content=text,
-                task_type=task_type
-            )
-            return np.array(result['embedding'])
+        )
+        return np.array(result.embeddings[0].values)
     except Exception as e:
         error_msg = str(e)
         # Проверяем на ошибки геолокации
@@ -92,7 +90,7 @@ def get_embeddings_batch(texts: list[str], task_type: str = "retrieval_document"
         retry_on_quota: Повторять ли при ошибке квоты
     
     Returns:
-        numpy array формы (len(texts), 768)
+        numpy array формы (len(texts), Config.EMBEDDING_DIMENSION)
     """
     if not texts:
         return np.array([])
@@ -100,6 +98,12 @@ def get_embeddings_batch(texts: list[str], task_type: str = "retrieval_document"
     all_embeddings = []
     failed_count = 0
     batch_size = 100
+    
+    task_type_map = {
+        "retrieval_query": types.EmbedContentTaskType.RETRIEVAL_QUERY,
+        "retrieval_document": types.EmbedContentTaskType.RETRIEVAL_DOCUMENT,
+    }
+    task = task_type_map.get(task_type, types.EmbedContentTaskType.RETRIEVAL_DOCUMENT)
     
     total_batches = (len(texts) + batch_size - 1) // batch_size
     print(f"\nГенерация эмбеддингов для {len(texts)} текстов...")
@@ -112,24 +116,31 @@ def get_embeddings_batch(texts: list[str], task_type: str = "retrieval_document"
             print(f"  Батч {batch_num}/{total_batches}... (неудачных: {failed_count})")
             sys.stdout.flush()
         
-        batch_embeddings = []
-        for text in batch:
-            embedding = get_embedding(text, task_type)
-            
-            if embedding is None:
-                # Если получили None (ошибка API), используем нулевой вектор
-                embedding = np.zeros(768)
-                failed_count += 1
+        try:
+            result = client.models.embed_content(
+                model="gemini-embedding-001",
+                contents=batch,
+                config=types.EmbedContentConfig(
+                    task_type=task,
+                    output_dimensionality=Config.EMBEDDING_DIMENSION
+                )
+            )
+            for emb in result.embeddings:
+                all_embeddings.append(np.array(emb.values))
                 
-                # Если это ошибка квоты - ждем и пробуем еще раз
-                if retry_on_quota and failed_count > 10:
-                    print(f"\n⚠️ Слишком много ошибок API. Ждем 60 секунд...")
-                    time.sleep(60)
-                    failed_count = 0
+        except Exception as e:
+            error_msg = str(e)
+            # При ошибке используем нулевые векторы
+            print(f"  Батч {batch_num} ошибка: {error_msg[:50]}...")
+            for _ in range(len(batch)):
+                all_embeddings.append(np.zeros(Config.EMBEDDING_DIMENSION))
+                failed_count += 1
             
-            batch_embeddings.append(embedding)
-        
-        all_embeddings.extend(batch_embeddings)
+            # Если это ошибка квоты - ждем и пробуем еще раз
+            if retry_on_quota and failed_count > 10:
+                print(f"\n⚠️ Слишком много ошибок API. Ждем 60 секунд...")
+                time.sleep(60)
+                failed_count = 0
     
     if failed_count > 0:
         print(f"  Внимание: {failed_count} эмбеддингов не удалось создать (использованы нулевые векторы)")
@@ -160,54 +171,6 @@ def load_csv() -> pd.DataFrame:
     return df
 
 
-def prepare_texts(df: pd.DataFrame) -> list[str]:
-    """Объединение текстовых полей для создания эмбеддингов."""
-    texts = []
-    for _, row in df.iterrows():
-        parts = []
-        
-        if pd.notna(row.get("ad_content_cited")):
-            parts.append(f"Реклама: {row['ad_content_cited']}")
-        
-        if pd.notna(row.get("ad_description")):
-            parts.append(f"Описание рекламы: {row['ad_description']}")
-        
-        if pd.notna(row.get("violation_summary")):
-            parts.append(f"Нарушение: {row['violation_summary']}")
-        
-        if pd.notna(row.get("FAS_arguments")):
-            args = str(row['FAS_arguments'])
-            if "Ключевой тезис:" in args:
-                thesis = args.split("Ключевой тезис:")[1].split("Юридическое")[0].strip()
-                parts.append(f"Обоснование ФАС: {thesis}")
-            else:
-                parts.append(f"Обоснование ФАС: {args[:500]}")
-        
-        if pd.notna(row.get("legal_provisions")):
-            legal = str(row['legal_provisions'])
-            legal = legal.replace('[', '').replace(']', '').replace("'", '')
-            parts.append(f"Нарушенные статьи: {legal}")
-        
-        if pd.notna(row.get("thematic_tags")):
-            tags = str(row['thematic_tags'])
-            parts.append(f"Теги: {tags}")
-        
-        if pd.notna(row.get("defendant_industry")):
-            parts.append(f"Отрасль: {row['defendant_industry']}")
-        
-        if pd.notna(row.get("ad_platform")):
-            parts.append(f"Платформа: {row['ad_platform']}")
-        
-        if pd.notna(row.get("Violation_Type")):
-            violation_type = "нарушение содержания" if str(row['Violation_Type']) == "substance" else "нарушение размещения"
-            parts.append(f"Тип: {violation_type}")
-        
-        text = " ".join(parts) if parts else "Нет данных"
-        texts.append(text)
-    
-    return texts
-
-
 def prepare_separate_field_texts(df: pd.DataFrame) -> dict:
     """Подготовить отдельные тексты для каждого поля с эмбеддингами."""
     fas_args_texts = []
@@ -215,6 +178,7 @@ def prepare_separate_field_texts(df: pd.DataFrame) -> dict:
     ad_desc_texts = []
     
     for _, row in df.iterrows():
+        # FAS_arguments - самое важное для первичного поиска
         if pd.notna(row.get("FAS_arguments")):
             args = str(row['FAS_arguments'])
             if "Ключевой тезис:" in args:
@@ -225,11 +189,13 @@ def prepare_separate_field_texts(df: pd.DataFrame) -> dict:
         else:
             fas_args_texts.append("")
         
+        # violation_summary - для переранжирования
         if pd.notna(row.get("violation_summary")):
             violation_texts.append(str(row['violation_summary']))
         else:
             violation_texts.append("")
         
+        # ad_description - для переранжирования
         if pd.notna(row.get("ad_description")):
             ad_desc_texts.append(str(row['ad_description']))
         else:
@@ -288,23 +254,8 @@ def main():
     # Загружаем CSV
     df = load_csv()
     
-    # Подготавливаем тексты
-    texts = prepare_texts(df)
-    
-    # Генерируем основные эмбеддинги
-    print("\n=== Генерация основных эмбеддингов ===")
-    embeddings = generate_embeddings(texts, task_type="retrieval_document")
-    
-    if embeddings.size == 0:
-        print("❌ Не удалось создать эмбеддинги. Проверьте подключение к VPN.")
-        return
-    
-    # Сохраняем основные эмбеддинги
-    embeddings_path = data_dir / "embeddings.npy"
-    np.save(embeddings_path, embeddings)
-    print(f"Эмбеддинги сохранены: {embeddings_path}")
-    
     # Генерируем отдельные эмбеддинги для полей
+    # (по новой архитектуре - не генерируем объединённый embeddings.npy)
     print("\n=== Генерация эмбеддингов для полей ===")
     field_texts = prepare_separate_field_texts(df)
     
@@ -325,9 +276,10 @@ def main():
     print("\n" + "=" * 50)
     print("ПОДГОТОВКА ДАННЫХ ЗАВЕРШЕНА!")
     print("=" * 50)
-    print(f"  - Основные эмбеддинги: {embeddings.shape[0]} векторов размерности {embeddings.shape[1]}")
+    print(f"  - Эмбеддинги полей: 3 файла")
     print(f"  - Кейсы: {len(cases)} записей")
     print(f"  - Модель: gemini-embedding-001")
+    print(f"  - Размерность: {Config.EMBEDDING_DIMENSION}")
 
 
 if __name__ == "__main__":

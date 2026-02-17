@@ -16,7 +16,6 @@ interface CaseCardProps {
 }
 
 export function CaseCard({ caseData, rank }: CaseCardProps) {
-  // Форматирование даты
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return "—";
     try {
@@ -30,17 +29,14 @@ export function CaseCard({ caseData, rank }: CaseCardProps) {
     }
   };
 
-  // Парсинг тегов
   const parseTags = (tagsStr: string | null): string[] => {
     if (!tagsStr) return [];
     return tagsStr.split(",").map((tag) => tag.trim()).filter(Boolean);
   };
 
-  // Парсинг статей
   const parseArticles = (articlesStr: string | null): string[] => {
     if (!articlesStr) return [];
     try {
-      // Формат: ['п. 1 ч. 2 ст. 5', 'п. 1 ч. 3 ст. 5']
       const parsed = JSON.parse(articlesStr.replace(/'/g, '"'));
       return Array.isArray(parsed) ? parsed : [];
     } catch {
@@ -51,8 +47,6 @@ export function CaseCard({ caseData, rank }: CaseCardProps) {
   const tags = parseTags(caseData.thematic_tags);
   const articles = parseArticles(caseData.legal_provisions);
   const scorePercent = Math.min(100, Math.max(0, Math.round(caseData.score * 100)));
-  
-  // Получить оценки по полям
   const fieldScores = caseData.field_scores;
 
   return (
@@ -79,7 +73,6 @@ export function CaseCard({ caseData, rank }: CaseCardProps) {
                     : caseData.Violation_Type}
                 </Badge>
               )}
-              {/* Бейдж статуса нарушения */}
               {caseData.violation_found && (
                 <Badge
                   variant={caseData.violation_found.toLowerCase().includes("да") || caseData.violation_found.toLowerCase().includes("yes") ? "destructive" : "default"}
@@ -110,7 +103,6 @@ export function CaseCard({ caseData, rank }: CaseCardProps) {
       </CardHeader>
 
       <CardContent className="space-y-4">
-        {/* Цитата рекламы */}
         {caseData.ad_content_cited && (
           <div>
             <h4 className="text-sm font-medium text-muted-foreground mb-1">
@@ -124,7 +116,6 @@ export function CaseCard({ caseData, rank }: CaseCardProps) {
           </div>
         )}
 
-        {/* Суть нарушения */}
         {caseData.violation_summary && (
           <div>
             <h4 className="text-sm font-medium text-muted-foreground mb-1">
@@ -138,33 +129,32 @@ export function CaseCard({ caseData, rank }: CaseCardProps) {
           </div>
         )}
 
-        {/* Оценки по полям */}
-        {fieldScores && (
+        {/* Оценки релевантности по полям */}
+        {fieldScores && Object.keys(fieldScores).length > 0 && (
           <div>
             <h4 className="text-sm font-medium text-muted-foreground mb-2">
               Оценки релевантности
             </h4>
             <div className="flex flex-wrap gap-2">
-              {fieldScores.FAS_arguments !== undefined && (
-                <div className="text-xs bg-muted px-2 py-1 rounded">
-                  ФАС: {Math.round(fieldScores.FAS_arguments * 100)}%
-                </div>
-              )}
-              {fieldScores.violation_summary !== undefined && (
-                <div className="text-xs bg-muted px-2 py-1 rounded">
+              {fieldScores.violation_summary !== undefined && fieldScores.violation_summary > 0 && (
+                <div className="text-xs bg-purple-100 text-purple-800 px-2 py-1 rounded">
                   Нарушение: {Math.round(fieldScores.violation_summary * 100)}%
                 </div>
               )}
-              {fieldScores.ad_description !== undefined && (
-                <div className="text-xs bg-muted px-2 py-1 rounded">
+              {fieldScores.ad_description !== undefined && fieldScores.ad_description > 0 && (
+                <div className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">
                   Реклама: {Math.round(fieldScores.ad_description * 100)}%
+                </div>
+              )}
+              {fieldScores.keyword !== undefined && fieldScores.keyword > 0 && (
+                <div className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded">
+                  Ключевые слова: {Math.round(fieldScores.keyword * 100)}%
                 </div>
               )}
             </div>
           </div>
         )}
 
-        {/* Платформа размещения */}
         {caseData.ad_platform && (
           <div>
             <h4 className="text-sm font-medium text-muted-foreground mb-1">
@@ -174,7 +164,6 @@ export function CaseCard({ caseData, rank }: CaseCardProps) {
           </div>
         )}
 
-        {/* Нарушенные статьи */}
         {articles.length > 0 && (
           <div>
             <h4 className="text-sm font-medium text-muted-foreground mb-1">
@@ -190,7 +179,6 @@ export function CaseCard({ caseData, rank }: CaseCardProps) {
           </div>
         )}
 
-        {/* Теги */}
         {tags.length > 0 && (
           <div>
             <h4 className="text-sm font-medium text-muted-foreground mb-1">
@@ -211,7 +199,6 @@ export function CaseCard({ caseData, rank }: CaseCardProps) {
           </div>
         )}
 
-        {/* Ссылка на ФАС */}
         {caseData.FASbd_link && (
           <div className="pt-2 border-t">
             <a

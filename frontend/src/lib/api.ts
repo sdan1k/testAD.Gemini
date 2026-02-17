@@ -1,81 +1,73 @@
-/**
- * API клиент для взаимодействия с FastAPI backend
- */
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// API функции для взаимодействия с бэкендом
 
 export interface CaseResult {
   index: number;
   score: number;
-  field_scores?: {
-    FAS_arguments?: number;
-    violation_summary?: number;
-    ad_description?: number;
-  };
-  docId: string | null;
-  Violation_Type: string | null;
-  document_date: string | null;
-  FASbd_link: string | null;
-  FAS_division: string | null;
-  violation_found: string | null;
-  defendant_name: string | null;
-  defendant_industry: string | null;
-  ad_description: string | null;
-  ad_content_cited: string | null;
-  ad_platform: string | null;
-  violation_summary: string | null;
-  FAS_arguments: string | null;
-  legal_provisions: string | null;
-  thematic_tags: string | null;
+  field_scores?: Record<string, number>;
+  docId?: string;
+  Violation_Type?: string;
+  document_date?: string;
+  FASbd_link?: string;
+  FAS_division?: string;
+  violation_found?: string;
+  defendant_name?: string;
+  defendant_industry?: string;
+  ad_description?: string;
+  ad_content_cited?: string;
+  ad_platform?: string;
+  violation_summary?: string;
+  FAS_arguments?: string;
+  legal_provisions?: string;
+  thematic_tags?: string;
 }
 
 export interface SearchResponse {
   query: string;
   total_cases: number;
   results: CaseResult[];
-  filters_applied?: {
-    year?: number[];
-    region?: string[];
-    industry?: string[];
-    article?: string[];
-  };
+  filters_applied?: Record<string, unknown>;
   message?: string;
 }
 
-export interface HealthResponse {
-  status: string;
-  model_loaded: boolean;
-  data_loaded: boolean;
-  total_cases: number;
-  embedding_dimension: number;
+export interface SubIndustry {
+  name: string;
+  count: number;
+  sub_industries?: SubIndustry[];
+}
+
+export interface IndustryGroup {
+  name: string;
+  count: number;
+  sub_industries: SubIndustry[];
 }
 
 export interface FilterOptions {
   years: number[];
   regions: string[];
   industries: string[];
+  industry_groups: IndustryGroup[];
+  region_groups?: { name: string; count: number; regions: string[] }[];
+  article_groups?: { name: string; count: number; parts: { name: string; count: number }[] }[];
+  region_groups: { name: string; count: number; regions: string[] }[];
   articles: string[];
 }
 
-export interface SearchFilters {
-  year?: number[];
-  region?: string[];
-  industry?: string[];
-  article?: string[];
-}
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
-/**
- * Семантический поиск по решениям ФАС
- */
 export async function searchCases(
   query: string,
-  topK: number = 10,
-  filters?: SearchFilters
+  topK: number = 20,
+  filters?: {
+    year?: number[];
+    region?: string[];
+    industry?: string[];
+    article?: string[];
+  }
 ): Promise<SearchResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/search`, {
-    method: "POST",
+  const response = await fetch(`${API_BASE}/api/search`, {
+    method: 'POST',
     headers: {
-      "Content-Type": "application/json",
+      'Content-Type': 'application/json',
     },
     body: JSON.stringify({
       query,
@@ -85,35 +77,22 @@ export async function searchCases(
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw new Error(error.detail || `Ошибка сервера: ${response.status}`);
+    const error = await response.json();
+    throw new Error(error.detail || 'Ошибка поиска');
   }
 
   return response.json();
 }
 
-/**
- * Проверка состояния сервера
- */
-export async function checkHealth(): Promise<HealthResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/health`);
-
-  if (!response.ok) {
-    throw new Error(`Сервер недоступен: ${response.status}`);
-  }
-
+export async function checkHealth() {
+  const response = await fetch(`${API_BASE}/api/health`);
   return response.json();
 }
 
-/**
- * Получить доступные значения для фильтров
- */
 export async function getFilterOptions(): Promise<FilterOptions> {
-  const response = await fetch(`${API_BASE_URL}/api/filters`);
-
+  const response = await fetch(`${API_BASE}/api/filters`);
   if (!response.ok) {
-    throw new Error(`Ошибка получения фильтров: ${response.status}`);
+    throw new Error('Ошибка загрузки фильтров');
   }
-
   return response.json();
 }

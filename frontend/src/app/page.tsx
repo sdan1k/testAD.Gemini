@@ -26,35 +26,57 @@ export default function Home() {
   const [cursorPos, setCursorPos] = useState({ x: -100, y: -100 });
   const [isHovering, setIsHovering] = useState(false);
   
-  // Refs для анимации
-  const containerRef = useRef<HTMLDivElement>(null);
-  
-  // Состояние для частиц - генерируются только на клиенте
-  const [particles, setParticles] = useState<any[]>([]);
-  const [floatingShapes, setFloatingShapes] = useState<any[]>([]);
   const [isClient, setIsClient] = useState(false);
 
-  // Генерируем частицы только на клиенте после монтирования
+  // Генерируем плавающие круги только на клиенте
   useEffect(() => {
     setIsClient(true);
-    setParticles(Array.from({ length: 15 }, (_, i) => ({
-      id: i,
-      size: Math.random() * 60 + 20,
-      posX: Math.random() * 100,
-      posY: Math.random() * 100,
-      duration: Math.random() * 20 + 15,
-      delay: Math.random() * 5,
-      direction: i % 2 === 0 ? 1 : -1
-    })));
     
-    setFloatingShapes(Array.from({ length: 5 }, (_, i) => ({
-      id: i,
-      size: Math.random() * 200 + 100,
-      posX: Math.random() * 100,
-      posY: Math.random() * 100,
-      duration: Math.random() * 40 + 30,
-      delay: Math.random() * 10
-    })));
+    // Создаем круги по коду пользователя
+    const container = document.getElementById('floatingCircles');
+    if (!container) return;
+    
+    const circleCount = 12;
+    for (let i = 0; i < circleCount; i++) {
+      const circle = document.createElement('div');
+      circle.className = 'floating-circle';
+      
+      const size = Math.random() * 120 + 40;
+      const posX = Math.random() * 100;
+      const posY = Math.random() * 100;
+      const duration = Math.random() * 25 + 20;
+      const delay = Math.random() * 10;
+      
+      circle.style.width = `${size}px`;
+      circle.style.height = `${size}px`;
+      circle.style.left = `${posX}%`;
+      circle.style.top = `${posY}%`;
+      
+      const animationName = `floatCircle${i}`;
+      circle.style.animation = `${animationName} ${duration}s infinite ${delay}s ease-in-out`;
+      
+      container.appendChild(circle);
+      
+      const style = document.createElement('style');
+      const dirX1 = Math.random() > 0.5 ? 1 : -1;
+      const dirY1 = Math.random() > 0.5 ? 1 : -1;
+      const moveX1 = Math.random() * 150 - 75;
+      const moveY1 = Math.random() * 150 - 75;
+      const moveX2 = Math.random() * 200 - 100;
+      const moveY2 = Math.random() * 200 - 100;
+      const moveX3 = Math.random() * 150 - 75;
+      const moveY3 = Math.random() * 150 - 75;
+      
+      style.textContent = `
+        @keyframes ${animationName} {
+            0%, 100% { transform: translate(0, 0); }
+            25% { transform: translate(${dirX1 * moveX1}px, ${dirY1 * moveY1}px); }
+            50% { transform: translate(${dirX1 * moveX2}px, ${dirY1 * moveY2}px); }
+            75% { transform: translate(${dirX1 * moveX3}px, ${dirY1 * moveY3}px); }
+        }
+      `;
+      document.head.appendChild(style);
+    }
   }, []);
 
   // Отслеживание курсора
@@ -68,7 +90,6 @@ export default function Home() {
     
     document.addEventListener('mousemove', handleMouseMove);
     
-    // Добавляем обработчики для интерактивных элементов
     const interactiveElements = document.querySelectorAll('button, input, a, [role="button"]');
     interactiveElements.forEach(el => {
       el.addEventListener('mouseenter', handleMouseEnter);
@@ -84,7 +105,7 @@ export default function Home() {
     };
   }, []);
 
-  // Проверка состояния сервера при загрузке
+  // Проверка состояния сервера
   useEffect(() => {
     const checkServer = async () => {
       try {
@@ -92,8 +113,6 @@ export default function Home() {
         if (health.status === "ok" && health.data_loaded) {
           setServerStatus("online");
           setTotalCases(health.total_cases);
-          
-          // Загрузить опции фильтров
           try {
             const options = await getFilterOptions();
             setFilterOptions(options);
@@ -125,11 +144,9 @@ export default function Home() {
         article: selectedFilters.article.length > 0 ? selectedFilters.article : undefined,
       };
       
-      // Запрашиваем 20 результатов (по умолчанию с бэкенда)
       const response = await searchCases(query, 20, filters);
       setResults(response.results);
       setTotalCases(response.total_cases);
-      
       if (response.message) {
         setMessage(response.message);
       }
@@ -141,72 +158,72 @@ export default function Home() {
     }
   };
 
-  const handleFilterChange = (filterType: string, values: any[]) => {
-    setSelectedFilters((prev) => ({
-      ...prev,
+  const handleFilterChange = async (filterType: string, values: any[]) => {
+    // Сначала создаём новые фильтры
+    const newFilters = {
+      ...selectedFilters,
       [filterType]: values,
-    }));
+    };
+    
+    // Обновляем состояние
+    setSelectedFilters(newFilters);
+    
+    // Если уже был выполнен поиск, повторяем его с новыми фильтрами
+    if (lastQuery && searchPerformed) {
+      setIsLoading(true);
+      try {
+        const filterParams = {
+          year: newFilters.year.length > 0 ? newFilters.year : undefined,
+          region: newFilters.region.length > 0 ? newFilters.region : undefined,
+          industry: newFilters.industry.length > 0 ? newFilters.industry : undefined,
+          article: newFilters.article.length > 0 ? newFilters.article : undefined,
+        };
+        
+        const response = await searchCases(lastQuery, 20, filterParams);
+        setResults(response.results);
+        setTotalCases(response.total_cases);
+      } catch (err) {
+        console.error("Error updating search with filters:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    }
   };
 
-  const handleClearFilters = () => {
-    setSelectedFilters({
+  const handleClearFilters = async () => {
+    const emptyFilters = {
       year: [],
       region: [],
       industry: [],
       article: [],
-    });
+    };
+    
+    setSelectedFilters(emptyFilters);
+    
+    // Если уже был выполнен поиск, повторяем его без фильтров
+    if (lastQuery && searchPerformed) {
+      setIsLoading(true);
+      try {
+        const response = await searchCases(lastQuery, 20, undefined);
+        setResults(response.results);
+        setTotalCases(response.total_cases);
+      } catch (err) {
+        console.error("Error clearing filters:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    }
   };
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Динамический фон с частицами - только на клиенте */}
-      {isClient && (
-        <>
-          <div className="dynamic-bg">
-            {particles.map((p) => (
-              <div
-                key={p.id}
-                className="particle"
-                style={{
-                  width: `${p.size}px`,
-                  height: `${p.size}px`,
-                  left: `${p.posX}%`,
-                  top: `${p.posY}%`,
-                  animationDelay: `${p.delay}s`,
-                  animationDuration: `${p.duration}s`,
-                  animationDirection: p.direction === 1 ? 'normal' : 'reverse',
-                }}
-              />
-            ))}
-          </div>
-          
-          {/* Плавающие формы */}
-          <div className="floating-shapes">
-            {floatingShapes.map((s) => (
-              <div
-                key={s.id}
-                className="floating-shape"
-                style={{
-                  width: `${s.size}px`,
-                  height: `${s.size}px`,
-                  left: `${s.posX}%`,
-                  top: `${s.posY}%`,
-                  animationDelay: `${s.delay}s`,
-                  animationDuration: `${s.duration}s`,
-                }}
-              />
-            ))}
-          </div>
-        </>
-      )}
+      {/* Плавающие фиолетовые круги */}
+      <div className="floating-circles-bg" id="floatingCircles"></div>
       
       {/* Кастомный курсор */}
       <div 
         className={`cursor-glow ${isHovering ? 'hidden' : ''}`}
-        style={{ 
-          left: cursorPos.x, 
-          top: cursorPos.y 
-        }} 
+        style={{ left: cursorPos.x, top: cursorPos.y }} 
       />
       
       {/* Header */}
@@ -230,54 +247,34 @@ export default function Home() {
           <div className="flex items-center gap-2">
             <div
               className={`w-3 h-3 rounded-full ${
-                serverStatus === "online"
-                  ? "bg-green-500"
-                  : serverStatus === "offline"
-                  ? "bg-red-500"
-                  : "bg-yellow-500 animate-pulse"
+                serverStatus === "online" ? "bg-green-500" : serverStatus === "offline" ? "bg-red-500" : "bg-yellow-500 animate-pulse"
               }`}
             />
             <span className="text-sm text-muted-foreground">
-              {serverStatus === "online"
-                ? `${totalCases.toLocaleString("ru-RU")} дел`
-                : serverStatus === "offline"
-                ? "Сервер недоступен"
-                : "Проверка..."}
+              {serverStatus === "online" ? `${totalCases.toLocaleString("ru-RU")} дел` : serverStatus === "offline" ? "Сервер недоступен" : "Проверка..."}
             </span>
           </div>
         </div>
       </header>
 
       <div className="flex">
-        {/* Sidebar with Filters */}
         {showFilters && filterOptions && (
           <aside className="w-[320px] border-r bg-card p-6 h-[calc(100vh-64px)] overflow-y-auto">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-lg font-semibold">Фильтры</h2>
-              <button
-                onClick={handleClearFilters}
-                className="text-sm text-muted-foreground hover:text-foreground"
-              >
+              <button onClick={handleClearFilters} className="text-sm text-muted-foreground hover:text-foreground">
                 Очистить все
               </button>
             </div>
-            
-            <FilterPanel
-              options={filterOptions}
-              selected={selectedFilters}
-              onChange={handleFilterChange}
-            />
+            <FilterPanel options={filterOptions} selected={selectedFilters} onChange={handleFilterChange} />
           </aside>
         )}
 
-        {/* Main content */}
-        <main className={`flex-1 container mx-auto px-4 py-8 ${showFilters ? '' : ''}`}>
-          {/* Search form */}
+        <main className={`flex-1 container mx-auto px-4 py-8`}>
           <div className="max-w-3xl mx-auto mb-8">
             <SearchForm onSearch={handleSearch} isLoading={isLoading} />
           </div>
 
-          {/* Error message */}
           {error && (
             <div className="max-w-3xl mx-auto mb-8">
               <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-4">
@@ -286,7 +283,6 @@ export default function Home() {
             </div>
           )}
 
-          {/* Message */}
           {message && (
             <div className="max-w-3xl mx-auto mb-8">
               <div className="bg-primary/10 border border-primary/20 rounded-lg p-4">
@@ -295,23 +291,15 @@ export default function Home() {
             </div>
           )}
 
-          {/* Results */}
           {results.length > 0 && (
             <div className="max-w-3xl mx-auto">
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-lg font-medium">
                   Результаты поиска
-                  {lastQuery && (
-                    <span className="text-muted-foreground font-normal ml-2">
-                      по запросу «{lastQuery}»
-                    </span>
-                  )}
+                  {lastQuery && <span className="text-muted-foreground font-normal ml-2">по запросу «{lastQuery}»</span>}
                 </h2>
-                <span className="text-sm text-muted-foreground">
-                  Найдено: {results.length}
-                </span>
+                <span className="text-sm text-muted-foreground">Найдено: {results.length}</span>
               </div>
-
               <div className="space-y-4">
                 {results.map((caseData, index) => (
                   <CaseCard key={caseData.docId || index} caseData={caseData} rank={index + 1} />
@@ -320,48 +308,35 @@ export default function Home() {
             </div>
           )}
 
-          {/* Loading state */}
           {isLoading && (
             <div className="max-w-3xl mx-auto">
               <div className="empty-state">
                 <div className="spinner" style={{ width: 48, height: 48 }} />
                 <p className="text-lg font-medium mt-4">Поиск по базе решений...</p>
-                <p className="text-muted-foreground mt-2">
-                  Анализируем контекст и юридические формулировки
-                </p>
+                <p className="text-muted-foreground mt-2">Анализируем контекст и юридические формулировки</p>
               </div>
             </div>
           )}
 
-          {/* Empty state - no query yet - показываем только если поиск еще не выполнялся */}
           {!isLoading && !searchPerformed && results.length === 0 && !error && (
             <div className="max-w-3xl mx-auto text-center py-12">
               <div className="text-6xl mb-4">🔍</div>
-              <h2 className="text-xl font-medium mb-2">
-                Введите запрос для поиска
-              </h2>
+              <h2 className="text-xl font-medium mb-2">Введите запрос для поиска</h2>
               <p className="text-muted-foreground max-w-md mx-auto">
-                Система найдет похожие решения ФАС по смыслу вашего запроса. 
-                Опишите ситуацию или вставьте текст рекламы.
+                Система найдет похожие решения ФАС по смыслу вашего запроса. Опишите ситуацию или вставьте текст рекламы.
               </p>
             </div>
           )}
 
-          {/* Empty results - показываем только если поиск выполнялся, но результатов нет */}
           {!isLoading && searchPerformed && results.length === 0 && error === null && (
             <div className="max-w-3xl mx-auto">
               <div className="empty-state">
                 <div className="text-6xl mb-4">📋</div>
-                <h2 className="text-xl font-medium mb-2">
-                  Мы не нашли точных совпадений
-                </h2>
+                <h2 className="text-xl font-medium mb-2">Мы не нашли точных совпадений</h2>
                 <p className="text-muted-foreground max-w-md mx-auto">
                   Похоже, таких формулировок в нашей базе еще не встречалось.
                   <br /><br />
-                  Попробуйте:
-                  <br />- Переформулировать запрос более общими словами
-                  <br />- Сбросить фильтры
-                  <br />- Описать суть, а не конкретный слоган
+                  Попробуйте переформулировать запрос, сбросить фильтры или описать суть.
                 </p>
               </div>
             </div>
@@ -369,7 +344,6 @@ export default function Home() {
         </main>
       </div>
 
-      {/* Footer */}
       <footer className="border-t mt-auto">
         <div className="container mx-auto px-4 py-4">
           <p className="text-center text-sm text-muted-foreground">

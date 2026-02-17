@@ -2,12 +2,19 @@
 FastAPI сервер для гибридного поиска по решениям ФАС.
 Запуск: uvicorn main:app --reload --port 8000
 
-Использует Google Gemini Embedding API (gemini-embedding-001) для создания эмбеддингов.
+Использует Google Gemini Embedding API (новый SDK google-genai).
 При недоступности Gemini - использует локальные эмбеддинги.
+
+Поддержка развертывания:
+- При наличии переменной DATA_DIR - ищет файлы там (для Render)
+- Иначе использует локальную папку data/
+- При первом запуске копирует файлы из репозитория в DATA_DIR если нужно
 """
 
 import json
 import re
+import shutil
+import os
 import numpy as np
 from pathlib import Path
 from typing import Optional, List, Dict
@@ -16,36 +23,101 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-# Используем google.generativeai
-import google.generativeai as genai
+# Новый SDK google-genai
+from google import genai
+from google.genai import types
 
 from config import Config
 
 # Конфигурация
 BASE_DIR = Path(__file__).parent
-DATA_DIR = BASE_DIR / "data"
-EMBEDDINGS_PATH = DATA_DIR / "embeddings.npy"
+
+# Используем Config.get_data_dir() для поддержки DATA_DIR
+DATA_DIR = Config.get_data_dir()
+
+# Пути к файлам эмбеддингов (по новой архитектуре)
 EMBEDDINGS_FAS_ARGS_PATH = DATA_DIR / "embeddings_FAS_arguments.npy"
 EMBEDDINGS_VIOLATION_PATH = DATA_DIR / "embeddings_violation_summary.npy"
 EMBEDDINGS_AD_DESC_PATH = DATA_DIR / "embeddings_ad_description.npy"
 CASES_PATH = DATA_DIR / "cases.json"
 
+# Путь к исходным файлам в репозитории (для копирования при первом запуске)
+REPO_DATA_DIR = BASE_DIR / "data"
+
 # Модель Gemini Embedding 001
 MODEL_NAME = "gemini-embedding-001"
-# Определим размерность автоматически при загрузке
-EMBEDDING_DIMENSION: int = 768
+# Размерность из конфига
+EMBEDDING_DIMENSION = Config.EMBEDDING_DIMENSION
 
-# Веса для полей (для RAG)
+# Веса для полей при переранжировании
+# FAS_arguments уже использован для первичного поиска!
 FIELD_WEIGHTS = {
-    'FAS_arguments': 1.0,
-    'violation_summary': 0.8,
-    'ad_description': 0.6,
-    'ad_content_cited': 0.7,
-    'legal_provisions': 0.5
+    'violation_summary': 0.6,
+    'ad_description': 0.4,
 }
 
-# Количество кандидатов для переранжирования
+# Количество кандидатов для первичного отбора
 SEARCH_TOP_CANDIDATES = 100
+
+# Иерархия регионов по федеральным округам
+REGION_HIERARCHY = {
+    "1. Центральный федеральный округ": [
+        "Белгородская область", "Брянская область", "Владимирская область",
+        "Воронежская область", "Ивановская область", "Калужская область",
+        "Костромская область", "Курская область", "Липецкая область",
+        "Московская область", "Орловская область", "Рязанская область",
+        "Смоленская область", "Тамбовская область", "Тверская область",
+        "Тульская область", "Ярославская область", "Город федерального значения Москва"
+    ],
+    "2. Южный федеральный округ": [
+        "Республика Адыгея", "Республика Калмыкия", "Республика Крым",
+        "Краснодарский край", "Астраханская область", "Волгоградская область",
+        "Ростовская область", "Город федерального значения Севастополь"
+    ],
+    "3. Северо-Западный федеральный округ": [
+        "Республика Карелия", "Республика Коми", "Архангельская область",
+        "Вологодская область", "Калининградская область", "Ленинградская область",
+        "Мурманская область", "Новгородская область", "Псковская область",
+        "Ненецкий автономный округ", "Город федерального значения Санкт-Петербург"
+    ],
+    "4. Дальневосточный федеральный округ": [
+        "Республика Саха (Якутия)", "Камчатский край", "Приморский край",
+        "Хабаровский край", "Амурская область", "Магаданская область",
+        "Сахалинская область", "Еврейская автономная область", "Чукотский автономный округ"
+    ],
+    "5. Сибирский федеральный округ": [
+        "Республика Алтай", "Республика Бурятия", "Республика Тыва",
+        "Республика Хакасия", "Алтайский край", "Забайкальский край",
+        "Красноярский край", "Иркутская область", "Кемеровская область",
+        "Новосибирская область", "Омская область", "Томская область"
+    ],
+    "6. Уральский федеральный округ": [
+        "Курганская область", "Свердловская область", "Тюменская область",
+        "Челябинская область", "Ханты-Мансийский автономный округ — Югра",
+        "Ямало-Ненецкий автономный округ"
+    ],
+    "7. Приволжский федеральный округ": [
+        "Республика Башкортостан", "Республика Марий Эл", "Республика Мордовия",
+        "Республика Татарстан", "Удмуртская Республика", "Чувашская Республика",
+        "Кировская область", "Нижегородская область", "Оренбургская область",
+        "Пензенская область", "Ульяновская область", "Самарская область",
+        "Саратовская область", "Пермский край"
+    ],
+    "8. Северо-Кавказский федеральный округ": [
+        "Республика Дагестан", "Республика Ингушетия",
+        "Кабардино-Балкарская Республика", "Карачаево-Черкесская Республика",
+        "Республика Северная Осетия — Алания", "Чеченская Республика",
+        "Ставропольский край"
+    ]
+}
+
+def map_region_to_federal_district(region: str) -> str:
+    """Определить федеральный округ по региону."""
+    region_clean = region.strip()
+    for district, regions in REGION_HIERARCHY.items():
+        if region_clean in regions:
+            return district
+    return "Другие регионы"
 
 
 def normalize_score(score: float, min_val: float = -1.0, max_val: float = 1.0) -> float:
@@ -61,7 +133,7 @@ def normalize_score(score: float, min_val: float = -1.0, max_val: float = 1.0) -
     return (score - min_val) / (max_val - min_val)
 
 
-def get_embedding(text: str, task_type: str = "retrieval_query") -> np.ndarray:
+def get_embedding(text: str, task_type: str = "retrieval_query") -> Optional[np.ndarray]:
     """
     Создать эмбеддинг для текста через Gemini API.
     При ошибке возвращает None.
@@ -69,13 +141,17 @@ def get_embedding(text: str, task_type: str = "retrieval_query") -> np.ndarray:
     if not text or not text.strip():
         return np.zeros(EMBEDDING_DIMENSION)
     
+    # task_type это просто строка в новом SDK
     try:
-        result = genai.embed_content(
+        result = Config._genai_client.models.embed_content(
             model=MODEL_NAME,
-            content=text,
-            task_type=task_type
+            contents=text,
+            config=types.EmbedContentConfig(
+                task_type=task_type,
+                output_dimensionality=EMBEDDING_DIMENSION
+            )
         )
-        return np.array(result['embedding'])
+        return np.array(result.embeddings[0].values)
     except Exception as e:
         error_msg = str(e)
         if "quota" in error_msg.lower() or "exceeded" in error_msg.lower():
@@ -90,10 +166,12 @@ def get_embedding(text: str, task_type: str = "retrieval_query") -> np.ndarray:
 # Глобальные переменные
 api_configured: bool = False
 use_gemini: bool = True  # Флаг - использовать Gemini или локальные эмбеддинги
-embeddings: Optional[np.ndarray] = None
+
+# Эмбеддинги для полей
 embeddings_fas_args: Optional[np.ndarray] = None
 embeddings_violation: Optional[np.ndarray] = None
 embeddings_ad_desc: Optional[np.ndarray] = None
+
 cases: Optional[list[dict]] = None
 
 
@@ -136,18 +214,53 @@ class SearchResponse(BaseModel):
     message: Optional[str] = None
 
 
+class SubIndustry(BaseModel):
+    """Подотрасль"""
+    name: str
+    count: int
+
+
+class IndustryGroup(BaseModel):
+    """Группа отрасли с подотраслями"""
+    name: str
+    count: int
+    sub_industries: List[SubIndustry] = []
+
+
+class RegionGroup(BaseModel):
+    """Группа региона по федеральному округу"""
+    name: str
+    count: int
+    regions: List[str] = []
+
+class ArticlePart(BaseModel):
+    """Часть статьи"""
+    name: str
+    count: int
+
+
+class ArticleGroup(BaseModel):
+    """Группа статьи с частями"""
+    name: str
+    count: int
+    parts: List[ArticlePart] = []
+
+
 class FilterOptions(BaseModel):
     years: List[int]
     regions: List[str]
-    industries: List[str]
+    region_groups: List[RegionGroup] = []  # Иерархия регионов по ФО
+    industries: List[str]  # Плоский список отраслей
+    industry_groups: List[IndustryGroup] = []  # Иерархия отраслей
     articles: List[str]
+    article_groups: List[ArticleGroup] = []  # Иерархия статей
 
 
 # FastAPI приложение
 app = FastAPI(
     title="FAS Hybrid Search API",
     description="API для гибридного поиска по решениям ФАС о нарушениях в рекламе",
-    version="3.0.0"
+    version="4.0.0"
 )
 
 # CORS
@@ -160,22 +273,69 @@ app.add_middleware(
 )
 
 
+# Модифицируем Config для хранения клиента
+Config._genai_client = None
+
+
 def configure_gemini():
     """Настройка Gemini API."""
     global api_configured
     api_key = Config.get_api_key()
-    genai.configure(api_key=api_key)
+    Config._genai_client = genai.Client(api_key=api_key)
     api_configured = True
     print(f"Gemini API настроен с ключом: {api_key[:10]}...")
 
 
+def init_data_dir():
+    """
+    Инициализация директории данных.
+    Если DATA_DIR отличается от REPO_DATA_DIR и файлов там нет - копирует из репозитория.
+    """
+    # Проверяем, нужно ли копирование
+    if DATA_DIR == REPO_DATA_DIR:
+        return  # Используем локальную папку - всё ОК
+    
+    # Создаем директорию DATA_DIR если не существует
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # Проверяем, есть ли уже файлы в DATA_DIR
+    required_files = [
+        "embeddings_FAS_arguments.npy",
+        "embeddings_violation_summary.npy", 
+        "embeddings_ad_description.npy",
+        "cases.json"
+    ]
+    
+    all_files_exist = all((DATA_DIR / f).exists() for f in required_files)
+    
+    if all_files_exist:
+        print(f"Данные уже есть в {DATA_DIR}")
+        return
+    
+    # Копируем файлы из репозитория
+    print(f"Инициализация данных: копирование из {REPO_DATA_DIR} в {DATA_DIR}")
+    for filename in required_files:
+        src = REPO_DATA_DIR / filename
+        dst = DATA_DIR / filename
+        if src.exists():
+            shutil.copy2(src, dst)
+            print(f"  Скопирован: {filename}")
+        else:
+            print(f"  ВНИМАНИЕ: Файл {filename} не найден в репозитории!")
+
+
 def load_data():
     """Загрузка всех данных при старте."""
-    global embeddings, embeddings_fas_args, embeddings_violation, embeddings_ad_desc, cases, EMBEDDING_DIMENSION, use_gemini
+    global embeddings_fas_args, embeddings_violation, embeddings_ad_desc, cases, use_gemini
     
     print("=" * 50)
     print("ЗАГРУЗКА ДАННЫХ")
     print("=" * 50)
+    
+    # Инициализируем директорию данных (копируем файлы если нужно)
+    init_data_dir()
+    
+    print(f"Директория данных: {DATA_DIR}")
     
     # Пробуем настроить Gemini API
     try:
@@ -184,32 +344,19 @@ def load_data():
         print(f"Не удалось настроить Gemini: {e}")
         use_gemini = False
     
-    # Основные эмбеддинги
-    if EMBEDDINGS_PATH.exists():
-        embeddings = np.load(EMBEDDINGS_PATH)
-        EMBEDDING_DIMENSION = embeddings.shape[1]
-        print(f"  Основные эмбеддинги: {embeddings.shape}")
-        print(f"  Размерность: {EMBEDDING_DIMENSION}")
-        
-        # Проверяем, соответствует ли размерность Gemini (768)
-        if EMBEDDING_DIMENSION != 768:
-            print(f"  ⚠️ Размерность эмбеддингов ({EMBEDDING_DIMENSION}) не соответствует Gemini (768)")
-            print(f"  → Используем эмбеддинги как есть, Gemini будет недоступен")
-            use_gemini = False
-    else:
-        print(f"  ВНИМАНИЕ: Файл {EMBEDDINGS_PATH} не найден!")
-        if not use_gemini:
-            print(f"  Запустите python prepare_data.py для создания эмбеддингов")
-    
-    # Отдельные эмбеддинги для полей
+    # Эмбеддинги FAS_arguments (для первичного поиска)
     if EMBEDDINGS_FAS_ARGS_PATH.exists():
         embeddings_fas_args = np.load(EMBEDDINGS_FAS_ARGS_PATH)
-        print(f"  FAS_arguments эмбеддинги: {embeddings_fas_args.shape}")
+        print(f"  FAS_arguments эмбеддинги (первичный поиск): {embeddings_fas_args.shape}")
+    else:
+        print(f"  ВНИМАНИЕ: Файл {EMBEDDINGS_FAS_ARGS_PATH} не найден!")
     
+    # Эмбеддинги violation_summary (для переранжирования)
     if EMBEDDINGS_VIOLATION_PATH.exists():
         embeddings_violation = np.load(EMBEDDINGS_VIOLATION_PATH)
         print(f"  violation_summary эмбеддинги: {embeddings_violation.shape}")
     
+    # Эмбеддинги ad_description (для переранжирования)
     if EMBEDDINGS_AD_DESC_PATH.exists():
         embeddings_ad_desc = np.load(EMBEDDINGS_AD_DESC_PATH)
         print(f"  ad_description эмбеддинги: {embeddings_ad_desc.shape}")
@@ -226,7 +373,8 @@ def load_data():
     if use_gemini:
         print(f"Режим: Gemini API (gemini-embedding-001)")
     else:
-        print(f"Режим: Локальные эмбеддинги (размерность {EMBEDDING_DIMENSION})")
+        print(f"Режим: Локальные эмбеддинги")
+    print(f"Размерность: {EMBEDDING_DIMENSION}")
     print("=" * 50)
 
 
@@ -271,11 +419,26 @@ def apply_filters(candidates: List[tuple], filters: dict) -> List[tuple]:
             if not case.get('legal_provisions'):
                 continue
             legal = case['legal_provisions']
+            # Проверяем, есть ли в legal_provisions хотя бы один выбранный фильтр
+            # При этом "ст. 5" должен matching с "ч. 7 ст. 5", но "ч. 7 ст. 5" НЕ должен matching со "ст. 5"
             found = False
             for art in filters['article']:
+                # Проверяем точное совпадение или совпадение с частью строки
+                # Сначала ищем точное совпадение
                 if art in legal:
                     found = True
                     break
+                # Если это часть статьи (например "ч. 7 ст. 5"), пробуем найти её отдельно
+                if art.startswith('ч.'):
+                    # Для частей статей пробуем найти точное совпадение
+                    import re
+                    parts = re.findall(r'ч\.\s*\d+\s*ст\.\s*\d+', legal, re.IGNORECASE)
+                    for p in parts:
+                        if art.lower() == p.lower():
+                            found = True
+                            break
+                    if found:
+                        break
             if not found:
                 continue
         
@@ -289,7 +452,8 @@ def keyword_search(query: str, top_k: int = 200) -> List[tuple]:
     if not cases:
         return []
     
-    search_fields = ['FAS_arguments', 'violation_summary', 'ad_description', 'ad_content_cited', 'legal_provisions']
+    # Ищем в полях для переранжирования
+    search_fields = ['violation_summary', 'ad_description', 'FAS_arguments', 'ad_content_cited', 'legal_provisions']
     
     query_lower = query.lower()
     query_words = set(re.findall(r'\b\w+\b', query_lower))
@@ -316,8 +480,11 @@ def keyword_search(query: str, top_k: int = 200) -> List[tuple]:
 
 
 def semantic_search(query_embedding: np.ndarray, top_k: int) -> List[tuple]:
-    """Семантический поиск по косинусному сходству."""
-    if embeddings is None:
+    """
+    Семантический поиск по косинусному сходству.
+    Использует embeddings_FAS_arguments для первичного отбора.
+    """
+    if embeddings_fas_args is None:
         return []
     
     # Нормализация с защитой от деления на ноль
@@ -327,13 +494,17 @@ def semantic_search(query_embedding: np.ndarray, top_k: int) -> List[tuple]:
     
     query_norm = query_embedding / norm
     
-    similarities = np.dot(embeddings, query_norm)
+    # Поиск по FAS_arguments
+    similarities = np.dot(embeddings_fas_args, query_norm)
     top_indices = np.argsort(similarities)[::-1][:top_k]
     return [(int(idx), float(similarities[idx])) for idx in top_indices]
 
 
 def rerank_with_field_embeddings(candidates: List[tuple], query_embedding: np.ndarray, use_keyword_scores: bool = False) -> List[dict]:
-    """Переранжирование кандидатов с использованием отдельных эмбеддингов полей."""
+    """
+    Переранжирование кандидатов с использованием эмбеддингов полей.
+    FAS_arguments уже НЕ используется - он был для первичного поиска.
+    """
     if not cases:
         return []
     
@@ -343,11 +514,9 @@ def rerank_with_field_embeddings(candidates: List[tuple], query_embedding: np.nd
     
     # Если эмбеддинг нулевой и нет семантических результатов - используем только keyword scores
     if is_zero_embedding and use_keyword_scores:
-        # Нормализуем keyword scores в диапазон 0-1
         if not candidates:
             return []
         
-        # Находим max для нормализации
         max_keyword_score = max(score for _, score in candidates) if candidates else 1
         if max_keyword_score == 0:
             max_keyword_score = 1
@@ -355,7 +524,6 @@ def rerank_with_field_embeddings(candidates: List[tuple], query_embedding: np.nd
         results = []
         for idx, keyword_score in candidates:
             case = cases[idx]
-            # Нормализуем keyword score
             normalized_score = keyword_score / max_keyword_score
             
             results.append({
@@ -372,7 +540,6 @@ def rerank_with_field_embeddings(candidates: List[tuple], query_embedding: np.nd
     
     # Стандартная логика с эмбеддингами
     if is_zero_embedding:
-        # Для нулевого вектора используем только базовые оценки
         results = []
         for idx, base_score in candidates:
             case = cases[idx]
@@ -395,17 +562,7 @@ def rerank_with_field_embeddings(candidates: List[tuple], query_embedding: np.nd
         case = cases[idx]
         field_scores = {}
         
-        if embeddings_fas_args is not None and idx < len(embeddings_fas_args):
-            fas_emb = embeddings_fas_args[idx]
-            fas_norm = fas_emb / np.linalg.norm(fas_emb)
-            if np.any(fas_emb):
-                r = np.dot(query_norm, fas_norm)
-                field_scores['FAS_arguments'] = normalize_score(r)
-            else:
-                field_scores['FAS_arguments'] = 0.0
-        else:
-            field_scores['FAS_arguments'] = normalize_score(base_score)
-        
+        # violation_summary - для переранжирования
         if embeddings_violation is not None and idx < len(embeddings_violation):
             viol_emb = embeddings_violation[idx]
             viol_norm = viol_emb / np.linalg.norm(viol_emb)
@@ -417,6 +574,7 @@ def rerank_with_field_embeddings(candidates: List[tuple], query_embedding: np.nd
         else:
             field_scores['violation_summary'] = 0.0
         
+        # ad_description - для переранжирования
         if embeddings_ad_desc is not None and idx < len(embeddings_ad_desc):
             ad_emb = embeddings_ad_desc[idx]
             ad_norm = ad_emb / np.linalg.norm(ad_emb)
@@ -428,6 +586,7 @@ def rerank_with_field_embeddings(candidates: List[tuple], query_embedding: np.nd
         else:
             field_scores['ad_description'] = 0.0
         
+        # Взвешенная сумма (FAS_arguments уже не участвует!)
         weighted_sum = sum(
             FIELD_WEIGHTS.get(field, 0) * score 
             for field, score in field_scores.items()
@@ -450,9 +609,9 @@ def rerank_with_field_embeddings(candidates: List[tuple], query_embedding: np.nd
 @app.post("/api/search", response_model=SearchResponse)
 async def search(request: SearchRequest):
     """Гибридный поиск по решениям ФАС."""
-    global use_gemini, embeddings, cases
+    global use_gemini, embeddings_fas_args, cases
     
-    if embeddings is None or cases is None:
+    if embeddings_fas_args is None or cases is None:
         raise HTTPException(
             status_code=503, 
             detail="Сервер не готов. Данные не загружены."
@@ -482,7 +641,7 @@ async def search(request: SearchRequest):
         # Используем нулевой эмбеддинг - будет работать только keyword search
         query_embedding = np.zeros(EMBEDDING_DIMENSION)
     
-    # Семантический поиск
+    # Семантический поиск по FAS_arguments (первичный отбор)
     semantic_results = semantic_search(query_embedding, SEARCH_TOP_CANDIDATES)
     
     # Keyword search - работает всегда
@@ -528,6 +687,311 @@ async def search(request: SearchRequest):
     )
 
 
+def normalize_industry_name(name: str) -> str:
+    """Нормализовать название отрасли - убрать лишние пробелы и т.д."""
+    return ' / '.join([s.strip() for s in name.split('/')])
+
+
+def build_industry_hierarchy(industries: set) -> List[IndustryGroup]:
+    """
+    Построить иерархию отраслей (до 3 уровней).
+    Формат: "Отрасль" или "Отрасль / Подотрасль" или "Отрасль / Подотрасль / Подподотрасль"
+    """
+    # Сначала подсчитаем количество для каждой отрасли
+    industry_counts: Dict[str, int] = {}
+    for industry in industries:
+        if not industry:
+            continue
+        industry_counts[industry] = industry_counts.get(industry, 0) + 1
+    
+    # Теперь строим иерархию
+    # all_industries: отрасль -> подотрасль -> {подподотрасль: count}
+    all_industries: Dict[str, Dict[str, Dict[str, int]]] = {}
+    
+    for industry in industries:
+        if not industry:
+            continue
+        
+        parts = [s.strip() for s in industry.split('/')]
+        
+        if len(parts) == 1:
+            main = parts[0]
+            if main not in all_industries:
+                all_industries[main] = {}
+        elif len(parts) == 2:
+            main, sub = parts
+            if main not in all_industries:
+                all_industries[main] = {}
+            if sub not in all_industries[main]:
+                all_industries[main][sub] = {}
+        elif len(parts) >= 3:
+            main, sub, subsub = parts[0], parts[1], parts[2]
+            if main not in all_industries:
+                all_industries[main] = {}
+            if sub not in all_industries[main]:
+                all_industries[main][sub] = {}
+            if subsub:
+                all_industries[main][sub][subsub] = all_industries[main][sub].get(subsub, 0) + 1
+    
+    # Строим результат с правильным подсчетом
+    result: List[IndustryGroup] = []
+    
+    for main in sorted(all_industries.keys()):
+        subs = all_industries[main]
+        sub_list: List[SubIndustry] = []
+        total = 0
+        
+        for sub_name in sorted(subs.keys()):
+            sub_data = subs[sub_name]
+            
+            # Подсчитываем общее количество для подотрасли
+            # Суммируем все подподотрасли + саму подотрасль (если есть записи "отрасль / подотрасль" без подподотрасли)
+            sub_count = sum(sub_data.values())
+            
+            # Также добавляем записи вида "Отрасль / Подотрасль" (без третьего уровня)
+            direct_key = f"{main} / {sub_name}"
+            sub_count += industry_counts.get(direct_key, 0)
+            
+            # Создаем подподотрасли
+            if sub_data:
+                sub_sub_list = [SubIndustry(name=ss, count=cc) for ss, cc in sorted(sub_data.items())]
+                sub_list.append(SubIndustry(
+                    name=sub_name,
+                    count=sub_count,
+                    sub_industries=sub_sub_list
+                ))
+            else:
+                sub_list.append(SubIndustry(name=sub_name, count=sub_count, sub_industries=[]))
+            
+            total += sub_count
+        
+        # Добавляем также записи вида "Отрасль" (без подотрасли)
+        total += industry_counts.get(main, 0)
+        
+        result.append(IndustryGroup(
+            name=main,
+            count=total,
+            sub_industries=sub_list
+        ))
+    
+    return result
+
+
+# Маппинг названий УФАС к субъектам РФ
+UFAS_TO_REGION = {
+    "Адыгейское УФАС": "Республика Адыгея",
+    "Алтайское УФАС": "Республика Алтай",
+    "Амурское УФАС": "Амурская область",
+    "Архангельское УФАС": "Архангельская область",
+    "Астраханское УФАС": "Астраханская область",
+    "Башкортостанское УФАС": "Республика Башкортостан",
+    "Белгородское УФАС": "Белгородская область",
+    "Брянское УФАС": "Брянская область",
+    "Бурятское УФАС": "Республика Бурятия",
+    "Волгоградское УФАС": "Волгоградская область",
+    "Вологодское УФАС": "Вологодская область",
+    "Воронежское УФАС": "Воронежская область",
+    "Дагестанское УФАС": "Республика Дагестан",
+    "Донецкое УФАС": "Донецкая Народная Республика",
+    "Еврейское УФАС": "Еврейская автономная область",
+    "Забайкальское УФАС": "Забайкальский край",
+    "Ивановское УФАС": "Ивановская область",
+    "Ингушское УФАС": "Республика Ингушетия",
+    "Иркутское УФАС": "Иркутская область",
+    "Кабардино-Балкарское УФАС": "Кабардино-Балкарская Республика",
+    "Калининградское УФАС": "Калининградская область",
+    "Калмыцкое УФАС": "Республика Калмыкия",
+    "Камчатское УФАС": "Камчатский край",
+    "Карачаево-Черкесское УФАС": "Карачаево-Черкесская Республика",
+    "Карельское УФАС": "Республика Карелия",
+    "Кемеровское УФАС": "Кемеровская область",
+    "Кировское УФАС": "Кировская область",
+    "Коми УФАС": "Республика Коми",
+    "Костромское УФАС": "Костромская область",
+    "Краснодарское УФАС": "Краснодарский край",
+    "Красноярское УФАС": "Красноярский край",
+    "Крымское МУФАС": "Республика Крым",
+    "Курганское УФАС": "Курганская область",
+    "Курское УФАС": "Курская область",
+    "Ленинградское УФАС": "Ленинградская область",
+    "Липецкое УФАС": "Липецкая область",
+    "Луганское УФАС": "Луганская Народная Республика",
+    "Магаданское УФАС": "Магаданская область",
+    "Марийское УФАС": "Республика Марий Эл",
+    "Мордовское УФАС": "Республика Мордовия",
+    "Московское УФАС": "Город федерального значения Москва",
+    "Московское областное УФАС": "Московская область",
+    "Мурманское УФАС": "Мурманская область",
+    "Ненецкое УФАС": "Ненецкий автономный округ",
+    "Нижегородское УФАС": "Нижегородская область",
+    "Новгородское УФАС": "Новгородская область",
+    "Новосибирское УФАС": "Новосибирская область",
+    "Омское УФАС": "Омская область",
+    "Оренбургское УФАС": "Оренбургская область",
+    "Орловское УФАС": "Орловская область",
+    "Пензенское УФАС": "Пензенская область",
+    "Пермское УФАС": "Пермский край",
+    "Приморское УФАС": "Приморский край",
+    "Псковское УФАС": "Псковская область",
+    "Ростовское УФАС": "Ростовская область",
+    "Рязанское УФАС": "Рязанская область",
+    "Самарское УФАС": "Самарская область",
+    "Саратовское УФАС": "Саратовская область",
+    "Сахалинское УФАС": "Сахалинская область",
+    "Свердловское УФАС": "Свердловская область",
+    "Северо-Осетинское УФАС": "Республика Северная Осетия — Алания",
+    "Смоленское УФАС": "Смоленская область",
+    "Ставропольское УФАС": "Ставропольский край",
+    "Тамбовское УФАС": "Тамбовская область",
+    "Татарстанское УФАС": "Республика Татарстан",
+    "Тверское УФАС": "Тверская область",
+    "Томское УФАС": "Томская область",
+    "Тульское УФАС": "Тульская область",
+    "Тюменское УФАС": "Тюменская область",
+    "Удмуртское УФАС": "Удмуртская Республика",
+    "Ульяновское УФАС": "Ульяновская область",
+    "Хабаровское УФАС": "Хабаровский край",
+    "Хакасское УФАС": "Республика Хакасия",
+    "Ханты-Мансийское УФАС": "Ханты-Мансийский автономный округ — Югра",
+    "Челябинское УФАС": "Челябинская область",
+    "Чеченское УФАС": "Чеченская Республика",
+    "Чувашское УФАС": "Чувашская Республика",
+    "Ямало-Ненецкое УФАС": "Ямало-Ненецкий автономный округ",
+    "Ярославское УФАС": "Ярославская область",
+    "Севастопольское УФАС": "Город федерального значения Севастополь",
+    "Санкт-Петербургское УФАС": "Город федерального значения Санкт-Петербург",
+    "Якутское УФАС": "Республика Саха (Якутия)",
+}
+
+
+def build_article_hierarchy(articles: set) -> List[ArticleGroup]:
+    """
+    Построить иерархию статей закона.
+    Формат: "ст. X" -> "ч. 1 ст. X", "ч. 2 ст. X" и т.д.
+    """
+    # Подсчитываем количество для каждой статьи
+    article_counts: Dict[str, int] = {}
+    for article in articles:
+        if not article:
+            continue
+        article_counts[article] = article_counts.get(article, 0) + 1
+    
+    # Группируем по статьям
+    # article_map: { "ст. 12": { "ч. 1": 5, "ч. 2": 3 } }
+    article_map: Dict[str, Dict[str, int]] = {}
+    
+    for article in articles:
+        if not article:
+            continue
+        
+        # Проверяем формат: "ст. XX" или "ч. N ст. XX"
+        main_match = re.match(r'^ст\.\s*(\d+)$', article, re.IGNORECASE)
+        part_match = re.match(r'^ч\.\s*(\d+)\s*ст\.\s*(\d+)$', article, re.IGNORECASE)
+        
+        if main_match:
+            # Это основная статья "ст. 12"
+            article_num = main_match.group(1)
+            main_key = f"ст. {article_num}"
+            if main_key not in article_map:
+                article_map[main_key] = {}
+        elif part_match:
+            # Это часть статьи "ч. 1 ст. 12"
+            part_num = part_match.group(1)
+            article_num = part_match.group(2)
+            main_key = f"ст. {article_num}"
+            part_key = f"ч. {part_num}"
+            
+            if main_key not in article_map:
+                article_map[main_key] = {}
+            article_map[main_key][part_key] = article_counts.get(article, 0)
+    
+    # Сортируем статьи по номеру
+    def article_sort_key(s: str):
+        match = re.match(r'^ст\.\s*(\d+)$', s, re.IGNORECASE)
+        return int(match.group(1)) if match else 0
+    
+    sorted_articles = sorted(article_map.keys(), key=article_sort_key)
+    
+    result: List[ArticleGroup] = []
+    for main_key in sorted_articles:
+        parts_map = article_map[main_key]
+        
+        # Подсчитываем общее количество для статьи
+        total = article_counts.get(main_key, 0)
+        total += sum(parts_map.values())
+        
+        # Сортируем части по номеру
+        def part_sort_key(s: str):
+            match = re.match(r'^ч\.\s*(\d+)$', s, re.IGNORECASE)
+            return int(match.group(1)) if match else 0
+        
+        sorted_parts = sorted(parts_map.keys(), key=part_sort_key)
+        parts_list = [ArticlePart(name=p, count=parts_map[p]) for p in sorted_parts]
+        
+        result.append(ArticleGroup(
+            name=main_key,
+            count=total,
+            parts=parts_list
+        ))
+    
+    return result
+
+
+def build_region_hierarchy(db_regions: set) -> List[RegionGroup]:
+    """
+    Построить иерархию регионов по федеральным округам.
+    Сопоставляет регионы из БД с иерархией ФО.
+    """
+    result: List[RegionGroup] = []
+    
+    # Подсчитываем количество дел для каждого региона (УФАС)
+    region_counts: Dict[str, int] = {}
+    for r in db_regions:
+        if r:
+            region_counts[r] = region_counts.get(r, 0) + 1
+    
+    # Создаем обратный маппинг: субъект РФ -> УФАС
+    region_to_ufas = {v: k for k, v in UFAS_TO_REGION.items()}
+    
+    # Проходим по каждому ФО
+    for fo_name, fo_regions in REGION_HIERARCHY.items():
+        fo_total = 0
+        valid_regions = []
+        
+        for region in fo_regions:
+            # Ищем регион в БД по маппингу
+            found_count = 0
+            matched_ufas = []
+            
+            # Сначала ищем по маппингу
+            ufas_name = region_to_ufas.get(region)
+            if ufas_name and ufas_name in region_counts:
+                found_count = region_counts[ufas_name]
+                matched_ufas.append(ufas_name)
+            
+            # Также ищем по частичному совпадению (для регионов не в маппинге)
+            for db_region in db_regions:
+                if db_region and db_region not in matched_ufas:
+                    if region.lower() in db_region.lower() or db_region.lower() in region.lower():
+                        found_count += region_counts.get(db_region, 0)
+                        matched_ufas.append(db_region)
+            
+            if found_count > 0:
+                valid_regions.append(f"{region} ({found_count})")
+                fo_total += found_count
+        
+        if valid_regions:
+            # Убираем "(N)" из названий регионов - показываем только субъекты РФ
+            clean_regions = [r.split(' (')[0] for r in valid_regions]
+            result.append(RegionGroup(
+                name=fo_name,
+                count=fo_total,
+                regions=clean_regions
+            ))
+    
+    return result
+
+
 @app.get("/api/filters", response_model=FilterOptions)
 async def get_filter_options():
     """Получить доступные значения для фильтров."""
@@ -559,11 +1023,23 @@ async def get_filter_options():
             for art in found_articles:
                 articles.add(art.strip())
     
+    # Строим иерархию отраслей
+    industry_groups = build_industry_hierarchy(industries)
+    
+    # Строим иерархию регионов
+    region_groups = build_region_hierarchy(regions)
+    
+    # Строим иерархию статей
+    article_groups = build_article_hierarchy(articles)
+    
     return FilterOptions(
         years=sorted(list(years), reverse=True),
         regions=sorted(list(regions)),
+        region_groups=region_groups,
         industries=sorted(list(industries)),
-        articles=sorted(list(articles))
+        industry_groups=industry_groups,
+        articles=sorted(list(articles)),
+        article_groups=article_groups
     )
 
 
@@ -573,7 +1049,7 @@ async def health_check():
     return {
         "status": "ok",
         "model_loaded": use_gemini,
-        "data_loaded": embeddings is not None and cases is not None,
+        "data_loaded": embeddings_fas_args is not None and cases is not None,
         "total_cases": len(cases) if cases else 0,
         "embedding_dimension": EMBEDDING_DIMENSION,
         "embedding_model": "gemini-embedding-001" if use_gemini else "local-embeddings"
@@ -585,7 +1061,7 @@ async def root():
     """Корневой эндпоинт."""
     return {
         "name": "FAS Hybrid Search API",
-        "version": "3.0.0",
+        "version": "4.0.0",
         "embedding_model": "gemini-embedding-001" if use_gemini else f"local ({EMBEDDING_DIMENSION}d)",
         "docs": "/docs",
         "health": "/api/health",

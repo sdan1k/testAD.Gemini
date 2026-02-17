@@ -1,15 +1,14 @@
 """
 Сервис эмбеддингов.
-Использует Google Gemini Embedding API (gemini-embedding-001).
+Использует Google Gemini Embedding API (новый SDK google-genai).
 """
 
 import numpy as np
 from typing import List, Optional
-import time
 
-# Используем google.generativeai (старая версия)
-import google.generativeai as genai
-USE_NEW_LIB = False
+# Новый SDK google-genai
+from google import genai
+from google.genai import types
 
 from config import Config
 
@@ -17,10 +16,10 @@ from config import Config
 class EmbeddingService:
     """
     Сервис для создания эмбеддингов через Google Gemini Embedding API.
-    Использует модель gemini-embedding-001 с размерностью 768.
+    Использует модель gemini-embedding-001 с размерностью 3072.
     """
     
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, dimension: Optional[int] = None):
         """
         Инициализация сервиса эмбеддингов.
         """
@@ -28,18 +27,26 @@ class EmbeddingService:
         self.api_key = api_key or Config.get_api_key()
         
         # Инициализация клиента
-        if USE_NEW_LIB:
-            self.client = genai.Client(api_key=self.api_key)
-        else:
-            genai.configure(api_key=self.api_key)
+        self.client = genai.Client(api_key=self.api_key)
         
         # Модель gemini-embedding-001
         self.model_name = "gemini-embedding-001"
-        self.dimension = 768  # Gemini embedding-001 имеет размерность 768
+        self.dimension = dimension or Config.EMBEDDING_DIMENSION
         
         print(f"Сервис эмбеддингов инициализирован.")
         print(f"Модель: {self.model_name}")
         print(f"Размерность эмбеддингов: {self.dimension}")
+    
+    def _get_task_type(self, task_type: str) -> types.EmbedContentTaskType:
+        """Преобразование типа задачи в enum."""
+        task_type_map = {
+            "retrieval_query": "retrieval_query",
+            "retrieval_document": "retrieval_document",
+            "semantic_similarity": types.EmbedContentTaskType.SEMANTIC_SIMILARITY,
+            "classification": types.EmbedContentTaskType.CLASSIFICATION,
+            "clustering": types.EmbedContentTaskType.CLUSTERING,
+        }
+        return task_type_map.get(task_type, "retrieval_query")
     
     def embed_text(self, text: str, task_type: str = "retrieval_query") -> np.ndarray:
         """
@@ -50,26 +57,22 @@ class EmbeddingService:
             task_type: Тип задачи (retrieval_query или retrieval_document)
         
         Returns:
-            numpy array размерностью 768
+            numpy array размерностью self.dimension (по умолчанию 3072)
         """
         if not text or not text.strip():
             return np.zeros(self.dimension)
         
         try:
-            if USE_NEW_LIB:
-                result = self.client.models.embed_content(
-                    model=self.model_name,
-                    content=text,
-                    config=types.EmbedContentTaskType(task_type)
+            result = self.client.models.embed_content(
+                model=self.model_name,
+                contents=text,
+                config=types.EmbedContentConfig(
+                    task_type=self._get_task_type(task_type),
+                    output_dimensionality=self.dimension
                 )
-                return np.array(result.embedding.values)
-            else:
-                result = genai.embed_content(
-                    model=self.model_name,
-                    content=text,
-                    task_type=task_type
-                )
-                return np.array(result['embedding'])
+            )
+            # Новый SDK возвращает result.embeddings[0].values
+            return np.array(result.embeddings[0].values)
         except Exception as e:
             print(f"Ошибка при создании эмбеддинга: {e}")
             return np.zeros(self.dimension)
@@ -78,14 +81,13 @@ class EmbeddingService:
         """
         Создать эмбеддинги для списка текстов (документов).
         
-        Gemini API имеет ограничение на количество текстов за один запрос,
-        поэтому делаем батчинг.
+        Gemini API может обрабатывать несколько текстов за раз (до 100).
         
         Args:
             texts: Список текстов для эмбеддингов
         
         Returns:
-            numpy array формы (len(texts), 768)
+            numpy array формы (len(texts), dimension)
         """
         if not texts:
             return np.array([])
@@ -102,18 +104,22 @@ class EmbeddingService:
             print(f"  Обработка батча {batch_num}/{total_batches}...")
             
             try:
-                # Gemini API может обрабатывать несколько текстов за раз
-                batch_embeddings = []
-                for text in batch:
-                    embedding = self.embed_text(text, task_type="retrieval_document")
-                    batch_embeddings.append(embedding)
-                
-                all_embeddings.extend(batch_embeddings)
-                
+                result = self.client.models.embed_content(
+                    model=self.model_name,
+                    contents=batch,
+                    config=types.EmbedContentConfig(
+                        task_type="retrieval_document",
+                        output_dimensionality=self.dimension
+                    )
+                )
+                # Новый SDK возвращает список embeddings
+                for emb in result.embeddings:
+                    all_embeddings.append(np.array(emb.values))
+                    
             except Exception as e:
                 print(f"Ошибка при обработке батча {batch_num}: {e}")
                 # В случае ошибки возвращаем нулевые эмбеддинги для батча
-                all_embeddings.extend([np.zeros(self.dimension).tolist() for _ in range(len(batch))])
+                all_embeddings.extend([np.zeros(self.dimension) for _ in range(len(batch))])
         
         return np.array(all_embeddings)
     
@@ -125,7 +131,7 @@ class EmbeddingService:
             query: Поисковый запрос
         
         Returns:
-            numpy array размерностью 768
+            numpy array размерностью self.dimension (по умолчанию 3072)
         """
         return self.embed_text(query, task_type="retrieval_query")
     
@@ -138,7 +144,7 @@ class EmbeddingService:
             task_type: Тип задачи
         
         Returns:
-            numpy array формы (len(texts), 768)
+            numpy array формы (len(texts), dimension)
         """
         if not texts:
             return np.array([])
@@ -150,16 +156,20 @@ class EmbeddingService:
             batch = texts[i:i + batch_size]
             
             try:
-                batch_embeddings = []
-                for text in batch:
-                    embedding = self.embed_text(text, task_type)
-                    batch_embeddings.append(embedding)
-                
-                all_embeddings.extend(batch_embeddings)
-                
+                result = self.client.models.embed_content(
+                    model=self.model_name,
+                    contents=batch,
+                    config=types.EmbedContentConfig(
+                        task_type=self._get_task_type(task_type),
+                        output_dimensionality=self.dimension
+                    )
+                )
+                for emb in result.embeddings:
+                    all_embeddings.append(np.array(emb.values))
+                    
             except Exception as e:
                 print(f"Ошибка при обработке батча: {e}")
-                all_embeddings.extend([np.zeros(self.dimension).tolist() for _ in range(len(batch))])
+                all_embeddings.extend([np.zeros(self.dimension) for _ in range(len(batch))])
         
         return np.array(all_embeddings)
 
