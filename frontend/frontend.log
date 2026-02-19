@@ -1,0 +1,15 @@
+
+> frontend@0.1.0 dev
+> next dev
+
+▲ Next.js 16.1.4 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://10.110.190.140:3000
+
+✓ Starting...
+✓ Ready in 795ms
+ GET / 200 in 369ms (compile: 287ms, render: 82ms)
+ GET / 200 in 171ms (compile: 15ms, render: 157ms)
+ GET /apple-touch-icon.png 404 in 119ms (compile: 81ms, render: 38ms)
+ GET /apple-touch-icon-precomposed.png 404 in 126ms (compile: 67ms, render: 60ms)
+ GET / 200 in 141ms (compile: 87ms, render: 54ms)

@@ -28,6 +28,7 @@ from google import genai
 from google.genai import types
 
 from config import Config
+from industry_mapping import INDUSTRY_HIERARCHY, expand_filter_categories
 
 # Конфигурация
 BASE_DIR = Path(__file__).parent
@@ -218,6 +219,7 @@ class SubIndustry(BaseModel):
     """Подотрасль"""
     name: str
     count: int
+    sub_industries: List['SubIndustry'] = []
 
 
 class IndustryGroup(BaseModel):
@@ -412,33 +414,119 @@ def apply_filters(candidates: List[tuple], filters: dict) -> List[tuple]:
                 continue
         
         if filters.get('industry'):
-            if not case.get('defendant_industry') or case['defendant_industry'] not in filters['industry']:
+            # Разворачиваем выбранные категории фильтра в реальные значения из БД
+            expanded_industries = expand_filter_categories(filters['industry'])
+            if not case.get('defendant_industry') or case['defendant_industry'] not in expanded_industries:
                 continue
         
         if filters.get('article'):
             if not case.get('legal_provisions'):
                 continue
-            legal = case['legal_provisions']
+            legal_raw = case['legal_provisions']
+            
+            # Парсим JSON массив если это строка типа "['п. 1 ч. 2 ст. 5', ...]"
+            legal_provisions = []
+            if isinstance(legal_raw, str):
+                try:
+                    # Пробуем распарсить как JSON массив
+                    legal_provisions = json.loads(legal_raw.replace("'", '"'))
+                except:
+                    # Если не парсится, используем как есть
+                    legal_provisions = [legal_raw]
+            elif isinstance(legal_raw, list):
+                legal_provisions = legal_raw
+            else:
+                legal_provisions = [str(legal_raw)]
+            
             # Проверяем, есть ли в legal_provisions хотя бы один выбранный фильтр
-            # При этом "ст. 5" должен matching с "ч. 7 ст. 5", но "ч. 7 ст. 5" НЕ должен matching со "ст. 5"
             found = False
             for art in filters['article']:
-                # Проверяем точное совпадение или совпадение с частью строки
-                # Сначала ищем точное совпадение
-                if art in legal:
-                    found = True
-                    break
-                # Если это часть статьи (например "ч. 7 ст. 5"), пробуем найти её отдельно
-                if art.startswith('ч.'):
-                    # Для частей статей пробуем найти точное совпадение
-                    import re
-                    parts = re.findall(r'ч\.\s*\d+\s*ст\.\s*\d+', legal, re.IGNORECASE)
-                    for p in parts:
-                        if art.lower() == p.lower():
-                            found = True
-                            break
-                    if found:
+                # Нормализуем фильтр для поиска - убираем точки для гибкого поиска
+                # "ч. 3 ст. 5" -> "ч 3 ст 5"
+                art_normalized = art.lower().replace('.', ' ').replace('  ', ' ').strip()
+                
+                # Извлекаем компоненты фильтра
+                # Форматы: "ст. 5", "ч. 3 ст. 5", "ч.3 ст.5"
+                filter_st_num = None
+                filter_ch_num = None
+                filter_p_num = None
+                
+                # Ищем "п. X ч. Y ст. Z"
+                p_ch_st_match = re.search(r'п\s*(\d+)\s*ч\s*(\d+)\s*ст\s*(\d+)', art_normalized)
+                if p_ch_st_match:
+                    filter_p_num = p_ch_st_match.group(1)
+                    filter_ch_num = p_ch_st_match.group(2)
+                    filter_st_num = p_ch_st_match.group(3)
+                else:
+                    # Ищем "ч. Y ст. Z"
+                    ch_st_match = re.search(r'ч\s*(\d+)\s*ст\s*(\d+)', art_normalized)
+                    if ch_st_match:
+                        filter_ch_num = ch_st_match.group(1)
+                        filter_st_num = ch_st_match.group(2)
+                    else:
+                        # Ищем просто "ст. Z"
+                        st_match = re.search(r'ст\s*(\d+)', art_normalized)
+                        if st_match:
+                            filter_st_num = st_match.group(1)
+                
+                for prov in legal_provisions:
+                    prov_normalized = prov.lower().replace('.', ' ').replace('  ', ' ').strip()
+                    
+                    # Извлекаем компоненты из провизии
+                    prov_st_num = None
+                    prov_ch_num = None
+                    prov_p_num = None
+                    
+                    # Ищем "п. X ч. Y ст. Z"
+                    p_ch_st_match_prov = re.search(r'п\s*(\d+)\s*ч\s*(\d+)\s*ст\s*(\d+)', prov_normalized)
+                    if p_ch_st_match_prov:
+                        prov_p_num = p_ch_st_match_prov.group(1)
+                        prov_ch_num = p_ch_st_match_prov.group(2)
+                        prov_st_num = p_ch_st_match_prov.group(3)
+                    else:
+                        # Ищем "ч. Y ст. Z"
+                        ch_st_match_prov = re.search(r'ч\s*(\d+)\s*ст\s*(\d+)', prov_normalized)
+                        if ch_st_match_prov:
+                            prov_ch_num = ch_st_match_prov.group(1)
+                            prov_st_num = ch_st_match_prov.group(2)
+                        else:
+                            # Ищем просто "ст. Z"
+                            st_match_prov = re.search(r'ст\s*(\d+)', prov_normalized)
+                            if st_match_prov:
+                                prov_st_num = st_match_prov.group(1)
+                    
+                    # Логика совпадения:
+                    # 1. Если фильтр "ст. 5" - совпадает с любой провизией где ст = 5
+                    # 2. Если фильтр "ч. 3 ст. 5" - совпадает с провизией где ст = 5 И ч = 3 (независимо от п)
+                    # 3. Если фильтр "п. 1 ч. 3 ст. 5" - совпадает только если все компоненты совпадают
+                    
+                    match = False
+                    
+                    if filter_st_num and prov_st_num:
+                        # Статья совпадает
+                        if filter_st_num == prov_st_num:
+                            # Если фильтр содержит часть статьи
+                            if filter_ch_num:
+                                if prov_ch_num and filter_ch_num == prov_ch_num:
+                                    # Часть совпадает
+                                    if filter_p_num:
+                                        # Фильтр содержит пункт - нужно точное совпадение
+                                        if prov_p_num and filter_p_num == prov_p_num:
+                                            match = True
+                                    else:
+                                        # Фильтр без пункта - совпадает с любой провизией с этой частью
+                                        match = True
+                            else:
+                                # Фильтр только "ст. X" - совпадает с любой провизией этой статьи
+                                match = True
+                    
+                    if match:
+                        found = True
                         break
+                
+                if found:
+                    break
+            
             if not found:
                 continue
         
@@ -992,6 +1080,46 @@ def build_region_hierarchy(db_regions: set) -> List[RegionGroup]:
     return result
 
 
+def build_industry_hierarchy_from_mapping(industry_counts: Dict[str, int]) -> List[IndustryGroup]:
+    """
+    Построить иерархию отраслей на основе маппинга INDUSTRY_HIERARCHY.
+    Подсчитывает количество дел для каждой категории.
+    """
+    result: List[IndustryGroup] = []
+    
+    for industry_name, spheres in INDUSTRY_HIERARCHY.items():
+        sub_list: List[SubIndustry] = []
+        industry_total = 0
+        
+        for sphere_name, specs in spheres.items():
+            sphere_total = 0
+            sub_sub_list: List[SubIndustry] = []
+            
+            for spec in specs:
+                # spec - это реальное значение из БД
+                count = industry_counts.get(spec, 0)
+                if count > 0:
+                    sphere_total += count
+                    sub_sub_list.append(SubIndustry(name=spec, count=count))
+            
+            if sphere_total > 0:
+                industry_total += sphere_total
+                sub_list.append(SubIndustry(
+                    name=sphere_name,
+                    count=sphere_total,
+                    sub_industries=sub_sub_list
+                ))
+        
+        if industry_total > 0:
+            result.append(IndustryGroup(
+                name=industry_name,
+                count=industry_total,
+                sub_industries=sub_list
+            ))
+    
+    return result
+
+
 @app.get("/api/filters", response_model=FilterOptions)
 async def get_filter_options():
     """Получить доступные значения для фильтров."""
@@ -1002,6 +1130,9 @@ async def get_filter_options():
     regions = set()
     industries = set()
     articles = set()
+    
+    # Подсчитываем количество дел для каждого значения отрасли
+    industry_counts: Dict[str, int] = {}
     
     for case in cases:
         if case.get('document_date'):
@@ -1016,6 +1147,7 @@ async def get_filter_options():
         
         if case.get('defendant_industry'):
             industries.add(case['defendant_industry'])
+            industry_counts[case['defendant_industry']] = industry_counts.get(case['defendant_industry'], 0) + 1
         
         if case.get('legal_provisions'):
             legal = case['legal_provisions']
@@ -1023,8 +1155,8 @@ async def get_filter_options():
             for art in found_articles:
                 articles.add(art.strip())
     
-    # Строим иерархию отраслей
-    industry_groups = build_industry_hierarchy(industries)
+    # Строим иерархию отраслей на основе маппинга
+    industry_groups = build_industry_hierarchy_from_mapping(industry_counts)
     
     # Строим иерархию регионов
     region_groups = build_region_hierarchy(regions)

@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { SearchForm } from "@/components/search-form";
 import { CaseCard } from "@/components/case-card";
 import { FilterPanel } from "@/components/filter-panel";
+import { HelpButton } from "@/components/help-button";
 import { searchCases, checkHealth, getFilterOptions, CaseResult, FilterOptions } from "@/lib/api";
 
 export default function Home() {
@@ -216,7 +217,7 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background flex flex-col">
       {/* Плавающие фиолетовые круги */}
       <div className="floating-circles-bg" id="floatingCircles"></div>
       
@@ -226,15 +227,15 @@ export default function Home() {
         style={{ left: cursorPos.x, top: cursorPos.y }} 
       />
       
-      {/* Header */}
-      <header className="header">
-        <div>
-          <h1 className="text-2xl font-bold">Поиск практики ФАС по нарушениям в рекламе</h1>
-          <p className="text-muted-foreground text-sm mt-1">
+      {/* Header - адаптивный */}
+      <header className="header flex-col md:flex-row h-auto md:h-16 py-2 md:py-0">
+        <div className="flex-1">
+          <h1 className="text-lg md:text-2xl font-bold">Поиск практики ФАС</h1>
+          <p className="text-muted-foreground text-xs md:text-sm mt-0 md:mt-1 hidden md:block">
             Умный поиск по 7000+ решений ФАС
           </p>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 md:gap-4 mt-2 md:mt-0">
           <button
             onClick={() => setShowFilters(!showFilters)}
             className={`btn-secondary flex items-center gap-2 ${showFilters ? 'bg-primary/10' : ''}`}
@@ -259,18 +260,24 @@ export default function Home() {
 
       <div className="flex">
         {showFilters && filterOptions && (
-          <aside className="w-[320px] border-r bg-card p-6 h-[calc(100vh-64px)] overflow-y-auto">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-lg font-semibold">Фильтры</h2>
-              <button onClick={handleClearFilters} className="text-sm text-muted-foreground hover:text-foreground">
-                Очистить все
-              </button>
-            </div>
-            <FilterPanel options={filterOptions} selected={selectedFilters} onChange={handleFilterChange} />
-          </aside>
+          <>
+            {/* Overlay для мобильных - закрывает при клике */}
+            <div className="lg:hidden fixed inset-0 z-30 bg-black/50" onClick={() => setShowFilters(false)} />
+            <aside className="w-[320px] border-r bg-card h-screen overflow-hidden flex flex-col fixed left-4 top-0 pt-16 z-40 rounded-l-lg md:left-0 md:w-full md:max-w-[320px] md:rounded-none lg:left-4 lg:w-[320px] lg:rounded-l-lg">
+              <div className="flex items-center justify-between p-4 border-b bg-card shrink-0">
+                <h2 className="text-lg font-semibold">Фильтры</h2>
+                <button onClick={handleClearFilters} className="text-sm px-3 py-1.5 rounded-md bg-primary/10 text-primary hover:bg-primary/20 transition-colors font-medium">
+                  Очистить все
+                </button>
+              </div>
+              <div className="p-4 flex-1 overflow-y-auto">
+                <FilterPanel options={filterOptions} selected={selectedFilters} onChange={handleFilterChange} />
+              </div>
+            </aside>
+          </>
         )}
 
-        <main className={`flex-1 container mx-auto px-4 py-8`}>
+        <main className={`flex-1 container mx-auto px-4 py-8 pt-20 transition-all duration-300 ${showFilters ? 'xl:ml-[336px]' : ''}`}>
           <div className="max-w-3xl mx-auto mb-8">
             <SearchForm onSearch={handleSearch} isLoading={isLoading} />
           </div>
@@ -351,6 +358,8 @@ export default function Home() {
           </p>
         </div>
       </footer>
+
+      <HelpButton />
     </div>
   );
 }

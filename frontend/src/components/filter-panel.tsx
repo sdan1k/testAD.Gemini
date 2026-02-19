@@ -200,7 +200,8 @@ export function FilterPanel({ options, selected, onChange }: FilterPanelProps) {
   const handleArticleGroupCheckbox = (articleName: string, parts: {name: string, count: number}[]) => {
     const articleList: string[] = [articleName];
     for (const p of parts) {
-      articleList.push(`${p.name} ст. ${articleName.replace('ст. ', '')}`);
+      // Используем формат "ч. X ст. Y" как в backend
+      articleList.push(`${p.name} ${articleName}`);
     }
     
     // Проверяем, сколько частей уже выбрано
@@ -220,31 +221,37 @@ export function FilterPanel({ options, selected, onChange }: FilterPanelProps) {
   const isArticleGroupSelected = (articleName: string, parts: {name: string, count: number}[]) => {
     const articleList: string[] = [articleName];
     for (const p of parts) {
-      articleList.push(`${p.name} ст. ${articleName.replace('ст. ', '')}`);
+      // Используем формат "ч. X ст. Y" как в backend
+      articleList.push(`${p.name} ${articleName}`);
     }
     return articleList.some(a => selected.article.includes(a));
   };
 
   // ============ ОТРАСЛИ ============
+  // Новая логика: третий уровень содержит реальные значения из БД
+  // Отрасль -> Сфера -> Реальное значение (defendant_industry)
   
   const handleIndustryGroupClick = (groupName: string, subIndustries: {name: string, sub_industries?: {name: string, count: number}[]}[]) => {
-    const groupIndustries = selected.industry.filter(ind => ind === groupName || ind.startsWith(groupName + " / "));
-    
-    if (groupIndustries.length > 0) {
-      const toRemove = selected.industry.filter(ind => ind === groupName || ind.startsWith(groupName + " / "));
-      const newValues = selected.industry.filter(ind => !toRemove.includes(ind));
-      onChange("industry", newValues);
-    } else {
-      const toAdd = [groupName];
-      for (const sub of subIndustries) {
-        toAdd.push(`${groupName} / ${sub.name}`);
-        if (sub.sub_industries) {
-          for (const subsub of sub.sub_industries) {
-            toAdd.push(`${groupName} / ${sub.name} / ${subsub.name}`);
-          }
+    // Собираем все реальные значения из подотраслей
+    const realValues: string[] = [];
+    for (const sub of subIndustries) {
+      if (sub.sub_industries) {
+        for (const subsub of sub.sub_industries) {
+          realValues.push(subsub.name); // Это реальное значение из БД
         }
       }
-      onChange("industry", [...selected.industry, ...toAdd]);
+    }
+    
+    // Проверяем, сколько уже выбрано
+    const selectedFromGroup = selected.industry.filter(ind => realValues.includes(ind));
+    
+    if (selectedFromGroup.length > 0) {
+      // Убираем все значения этой отрасли
+      const newValues = selected.industry.filter(ind => !realValues.includes(ind));
+      onChange("industry", newValues);
+    } else {
+      // Добавляем все значения
+      onChange("industry", [...selected.industry, ...realValues]);
     }
     
     setExpandedIndustry(expandedIndustry === groupName ? null : groupName);
@@ -252,33 +259,54 @@ export function FilterPanel({ options, selected, onChange }: FilterPanelProps) {
   };
 
   const handleSubIndustryClick = (groupName: string, subName: string, subSubIndustries?: {name: string, count: number}[]) => {
-    const subFullName = `${groupName} / ${subName}`;
-    const currentSubIndustries = selected.industry.filter(ind => ind === subFullName || ind.startsWith(subFullName + " / "));
-    
-    if (currentSubIndustries.length > 0) {
-      const toRemove = selected.industry.filter(ind => ind === subFullName || ind.startsWith(subFullName + " / "));
-      const newValues = selected.industry.filter(ind => !toRemove.includes(ind));
-      onChange("industry", newValues);
-    } else {
-      const toAdd = [subFullName];
-      if (subSubIndustries) {
-        for (const subsub of subSubIndustries) {
-          toAdd.push(`${subFullName} / ${subsub.name}`);
-        }
+    // Собираем реальные значения из подподотраслей
+    const realValues: string[] = [];
+    if (subSubIndustries) {
+      for (const subsub of subSubIndustries) {
+        realValues.push(subsub.name); // Это реальное значение из БД
       }
-      onChange("industry", [...selected.industry, ...toAdd]);
     }
     
+    // Проверяем, сколько уже выбрано
+    const selectedFromSub = selected.industry.filter(ind => realValues.includes(ind));
+    
+    if (selectedFromSub.length > 0) {
+      // Убираем все значения этой подотрасли
+      const newValues = selected.industry.filter(ind => !realValues.includes(ind));
+      onChange("industry", newValues);
+    } else {
+      // Добавляем все значения
+      onChange("industry", [...selected.industry, ...realValues]);
+    }
+    
+    const subFullName = `${groupName} / ${subName}`;
     setExpandedSubIndustry(expandedSubIndustry === subFullName ? null : subFullName);
   };
 
-  const isIndustryGroupSelected = (groupName: string) => {
-    return selected.industry.some(ind => ind === groupName || ind.startsWith(groupName + " / "));
+  const isIndustryGroupSelected = (groupName: string, subIndustries: {name: string, sub_industries?: {name: string, count: number}[]}[]) => {
+    // Проверяем, выбрано ли хотя бы одно реальное значение из этой отрасли
+    for (const sub of subIndustries) {
+      if (sub.sub_industries) {
+        for (const subsub of sub.sub_industries) {
+          if (selected.industry.includes(subsub.name)) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
   };
 
-  const isSubIndustrySelected = (groupName: string, subName: string) => {
-    const subFullName = `${groupName} / ${subName}`;
-    return selected.industry.some(ind => ind === subFullName || ind.startsWith(subFullName + " / "));
+  const isSubIndustrySelected = (groupName: string, subName: string, subSubIndustries?: {name: string, count: number}[]) => {
+    // Проверяем, выбрано ли хотя бы одно реальное значение из этой подотрасли
+    if (subSubIndustries) {
+      for (const subsub of subSubIndustries) {
+        if (selected.industry.includes(subsub.name)) {
+          return true;
+        }
+      }
+    }
+    return false;
   };
 
   return (
@@ -364,7 +392,7 @@ export function FilterPanel({ options, selected, onChange }: FilterPanelProps) {
                           disabled={!hasRegions}
                         />
                         <span className="text-sm flex-1 font-medium">{group.name}</span>
-                        <span className="text-xs text-muted-foreground">({group.count})</span>
+                        {hasRegions && <span className="text-xs text-muted-foreground">({group.regions?.length || 0})</span>}
                         {/* Стрелка - только раскрывает, не выбирает */}
                         {hasRegions && (
                           <button
@@ -448,7 +476,7 @@ export function FilterPanel({ options, selected, onChange }: FilterPanelProps) {
             {options.industry_groups && options.industry_groups.length > 0 ? (
               <div className="space-y-1">
                 {options.industry_groups.map((group) => {
-                  const isSelected = isIndustryGroupSelected(group.name);
+                  const isSelected = isIndustryGroupSelected(group.name, group.sub_industries || []);
                   const hasSub = group.sub_industries && group.sub_industries.length > 0;
                   
                   return (
@@ -462,7 +490,6 @@ export function FilterPanel({ options, selected, onChange }: FilterPanelProps) {
                           onClick={(e) => e.stopPropagation()}
                         />
                         <span className="text-sm flex-1">{group.name}</span>
-                        <span className="text-xs text-muted-foreground">({group.count})</span>
                         {hasSub && (
                           <button
                             onClick={() => setExpandedIndustry(expandedIndustry === group.name ? null : group.name)}
@@ -478,7 +505,7 @@ export function FilterPanel({ options, selected, onChange }: FilterPanelProps) {
                       {hasSub && expandedIndustry === group.name && (
                         <div className="ml-4 space-y-1">
                           {group.sub_industries?.map((sub) => {
-                            const isSubSelected = isSubIndustrySelected(group.name, sub.name);
+                            const isSubSelected = isSubIndustrySelected(group.name, sub.name, sub.sub_industries);
                             const hasSubSub = sub.sub_industries && sub.sub_industries.length > 0;
                             
                             return (
@@ -492,7 +519,6 @@ export function FilterPanel({ options, selected, onChange }: FilterPanelProps) {
                                     onClick={(e) => e.stopPropagation()}
                                   />
                                   <span className="text-sm flex-1">{sub.name}</span>
-                                  <span className="text-xs text-muted-foreground">({sub.count})</span>
                                   {hasSubSub && (
                                     <button
                                       onClick={() => setExpandedSubIndustry(expandedSubIndustry === `${group.name} / ${sub.name}` ? null : `${group.name} / ${sub.name}`)}
@@ -508,19 +534,18 @@ export function FilterPanel({ options, selected, onChange }: FilterPanelProps) {
                                 {hasSubSub && expandedSubIndustry === `${group.name} / ${sub.name}` && (
                                   <div className="ml-4 space-y-1">
                                     {sub.sub_industries?.map((subsub) => {
-                                      const fullName = `${group.name} / ${sub.name} / ${subsub.name}`;
-                                      const isSubSubSelected = selected.industry.includes(fullName);
+                                      // subsub.name - это реальное значение из БД (defendant_industry)
+                                      const isSubSubSelected = selected.industry.includes(subsub.name);
                                       
                                       return (
                                         <label key={subsub.name} className="flex items-center gap-2 p-1 rounded cursor-pointer hover:bg-muted">
                                           <input
                                             type="checkbox"
                                             checked={isSubSubSelected}
-                                            onChange={() => handleCheckboxChange("industry", fullName, !isSubSubSelected)}
+                                            onChange={() => handleCheckboxChange("industry", subsub.name, !isSubSubSelected)}
                                             className="w-3 h-3 rounded border-border text-primary"
                                           />
                                           <span className="text-sm">{subsub.name}</span>
-                                          <span className="text-xs text-muted-foreground">({subsub.count})</span>
                                         </label>
                                       );
                                     })}
@@ -581,7 +606,7 @@ export function FilterPanel({ options, selected, onChange }: FilterPanelProps) {
                           className="w-4 h-4 rounded border-border text-primary"
                         />
                         <span className="text-sm flex-1 font-medium">{group.name}</span>
-                        <span className="text-xs text-muted-foreground">({group.count})</span>
+                        {hasParts && <span className="text-xs text-muted-foreground">({group.parts?.length || 0})</span>}
                         {/* Стрелка - только раскрывает, не выбирает */}
                         {hasParts && (
                           <button
@@ -599,7 +624,8 @@ export function FilterPanel({ options, selected, onChange }: FilterPanelProps) {
                       {hasParts && expandedArticle === group.name && (
                         <div className="ml-6 space-y-1">
                           {group.parts?.map((part) => {
-                            const fullName = `${part.name} ст. ${group.name.replace('ст. ', '')}`;
+                            // Используем формат "ч. X ст. Y" как в backend
+                            const fullName = `${part.name} ${group.name}`;
                             const isPartSelected = selected.article.includes(fullName);
                             
                             return (
