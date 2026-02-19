@@ -143,8 +143,8 @@ curl -X POST http://localhost:8000/api/search \
 
 ## 👥 Авторы
 
-- **latarho** — инициатор проекта
-- **[SDan1k](https://github.com/sdan1k)** — разработка
+- **latarho**
+- **[SDan1k](https://github.com/sdan1k)
 - **Екатерина** — [@slm_ct](https://t.me/slm_ct)
 
 ## 📞 Контакты
